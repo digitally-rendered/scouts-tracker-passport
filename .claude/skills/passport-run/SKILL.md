@@ -4,6 +4,9 @@ description: Make (or remake) every Cub's passport from fresh ScoutsTracker data
 ---
 # Make the passports
 
+Most leaders use the page: `uv run python passport.py ui` (the **Scouts Passports** Desktop
+shortcut). Suggest it for people who prefer clicking. The steps below are the terminal equivalent.
+
 1. Ask which OAS stages to include if they didn't say. Default **1-4** for Cubs
    (the template always includes 1-3; pages for 4+ are generated in the same style).
 2. Run: `uv run python passport.py run --stages 1-<N> --no-open`

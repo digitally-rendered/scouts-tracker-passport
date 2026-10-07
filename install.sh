@@ -57,7 +57,8 @@ uv run playwright install chromium || die "browser install failed"
 
 if [ "$(uname)" = "Darwin" ] && [ -d "$HOME/Desktop" ] && [ -z "${PASSPORT_NO_SHORTCUTS:-}" ]; then
   say "Adding launchers to your Desktop"
-  for pair in "Scouts Passports:run" "Scouts Passports - Sign in:login" "Scouts Passports - Check setup:doctor"; do
+  rm -f "$HOME/Desktop/Scouts Passports - Sign in.command"   # older installs; sign-in is on the page now
+  for pair in "Scouts Passports:app" "Scouts Passports - Check setup:doctor"; do
     name=${pair%%:*}; target=${pair#*:}
     printf '#!/bin/bash\nexec "%s/%s.command" "$@"\n' "$INSTALL_DIR" "$target" > "$HOME/Desktop/$name.command"
     chmod +x "$HOME/Desktop/$name.command"
@@ -77,6 +78,6 @@ fi
 cat <<EOF
 
 Done! To make passports, double-click "Scouts Passports" on your Desktop
-(or run: $INSTALL_DIR/run.command). Your data stays private in
+(or $INSTALL_DIR/app.command). It opens a page in your browser. Your data stays private in
 ${PASSPORT_DATA:-$HOME/ScoutsPassportData}.
 EOF

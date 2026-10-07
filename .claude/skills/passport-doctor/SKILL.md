@@ -16,6 +16,8 @@ description: Diagnose problems with the Scouts passport tool on Mac or Windows (
      `~/ScoutsPassportData/fonts`
    - "asking for your security PIN" → normal periodic PIN expiry: run `uv run python passport.py login`
    - fetch connects to the wrong account → the person needs a Cubs Scouter login in ScoutsTracker
+   - page won't open / "can't be reached" → its terminal window was closed; reopen the shortcut
+     (the address has a new secret key each time, so old bookmarks don't work)
    - Windows SmartScreen / Mac Gatekeeper blocks a launcher → see docs/TROUBLESHOOTING.md "Installing"
 3. Re-run the doctor and confirm everything passes.
 4. For anything else, look it up in `docs/TROUBLESHOOTING.md`.

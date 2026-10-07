@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 rm -rf dist && mkdir -p dist/scouts-passport
-FILES=(*.py scrape/*.py legacy/* launchers/* docs/* *.command *.bat install.sh install.ps1
+FILES=(*.py scrape/*.py tests/*.py tests/fixtures/* tests/ci/* legacy/* launchers/* docs/* *.command *.bat install.sh install.ps1
        pyproject.toml uv.lock .python-version README.md .gitignore
        "Passport 2026 Printable Generic.pdf")
 for f in "${FILES[@]}"; do

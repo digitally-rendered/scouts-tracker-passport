@@ -1,5 +1,6 @@
 """Scouts passport tool - one entry point for everything.
 
+    python passport.py ui          open the point-and-click page in your browser
     python passport.py run [--stages 1-4] [--no-fetch] [--no-open]
         fetch fresh data from ScoutsTracker, make every Cub's passport,
         audit them, and open the results
@@ -96,6 +97,7 @@ def main() -> int:
     r.add_argument("--stages", help=f"OAS stage range, e.g. {DEFAULT_STAGES} (asks if omitted)")
     r.add_argument("--no-fetch", action="store_true", help="reuse the latest fetched data")
     r.add_argument("--no-open", action="store_true", help="don't open the results")
+    sub.add_parser("ui", help="open the point-and-click page")
     sub.add_parser("login", help="sign into ScoutsTracker")
     d = sub.add_parser("doctor", help="check setup")
     d.add_argument("--online", action="store_true")
@@ -107,6 +109,9 @@ def main() -> int:
 
     if a.cmd == "run":
         return cmd_run(a)
+    if a.cmd == "ui":
+        import ui
+        return ui.main()
     if a.cmd == "login":
         return subprocess.call([sys.executable, str(HERE / "scrape/login.py")])
     if a.cmd == "doctor":
