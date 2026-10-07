@@ -80,6 +80,15 @@ your browser. Bookmarks to the page don't work later, because the address change
 ### "Open the page from the Scouts Passports shortcut"
 You opened an old or bookmarked address. Close the tab and double-click **Scouts Passports** again.
 
+### The buttons do nothing / "The tool isn't running any more"
+The page only works while its terminal window is open. Close the tab and double-click
+**Scouts Passports** again to get a fresh page.
+
+### Finding out what happened
+Everything the page runs (making passports, signing in, printing) is written to
+`ScoutsPassportData/logs/<date>.log`. The log has no passwords. It does name Cubs, so read it
+yourself rather than sending it on. Send only the error lines if you ask for help.
+
 ### The page says "Something is already running"
 Wait for the current task to finish (the spinner shows what it's doing). The sign-in task waits
 up to 10 minutes for you to finish signing in.

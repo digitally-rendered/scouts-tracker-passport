@@ -51,6 +51,14 @@ class Job:
         return True
 
     def _run(self, args: list[str]) -> None:
+        log_file = None
+        try:
+            log_dir = WORKSPACE / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = (log_dir / f"{datetime.now():%Y-%m-%d}.log").open("a", encoding="utf-8")
+            log_file.write(f"\n=== {datetime.now():%H:%M:%S} {self.name}: {' '.join(args)}\n")
+        except OSError:
+            pass
         try:
             proc = subprocess.Popen(
                 [sys.executable, *args], cwd=HERE, stdout=subprocess.PIPE,
@@ -60,11 +68,16 @@ class Job:
                 with self.lock:
                     self.lines.append(line.rstrip("\n"))
                     del self.lines[:-MAX_LOG_LINES]
+                if log_file:
+                    log_file.write(line)
             code = proc.wait()
         except Exception as e:  # noqa: BLE001
             with self.lock:
                 self.lines.append(f"Couldn't start: {e}")
             code = 1
+        if log_file:
+            log_file.write(f"=== exit code {code}\n")
+            log_file.close()
         with self.lock:
             self.running, self.exit_code = False, code
 
@@ -334,7 +347,16 @@ a{color:var(--green)}footer{color:var(--muted);font-size:14px;text-align:center}
 </main>
 <script>
 const T="__TOKEN__";
-const api=(p,opt={})=>fetch(p,{...opt,headers:{"X-Token":T,"Content-Type":"application/json"}}).then(r=>r.json().then(j=>({ok:r.ok,j})));
+const DEAD="The tool isn't running any more (its terminal window was closed, or this is an old tab). "+
+  "Close this tab and double-click <b>Scouts Passports</b> again.";
+async function api(p,opt={}){
+  let r;
+  try{ r=await fetch(p,{...opt,headers:{"X-Token":T,"Content-Type":"application/json"}}) }
+  catch(e){ msg(DEAD,"bad"); busy(true); throw e }
+  if(r.status===403){ msg(DEAD,"bad"); busy(true); throw new Error("forbidden") }
+  let j={}; try{ j=await r.json() }catch(e){}
+  return {ok:r.ok,j};
+}
 const $=id=>document.getElementById(id);
 let since=0,polling=false;
 
@@ -407,7 +429,9 @@ function doPrint(test){
 async function start(path,body){
   $("log").textContent="";since=0;$("msg").className="msg";
   const {ok,j}=await api(path,{method:"POST",body:JSON.stringify(body||{})});
-  if(!ok){msg(j.error==="busy"?"Something is already running. Please wait.":esc(j.error),"note");return}
+  if(!ok){msg(j.error==="busy"?"Something is already running. Please wait.":
+             j.error==="not made yet"?"Make the passports first.":esc(j.error||"That didn't work."),"note");return}
+  msg(path==="/api/print"?"Sending to the printer…":"Started…","note");
   poll();
 }
 
