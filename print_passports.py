@@ -236,15 +236,25 @@ def job_status(printer: str, job_id: int) -> tuple[str, int | None]:
     return (state.group(1) if state else "unknown"), (int(sheets.group(1)) if sheets else None)
 
 
-def wait_for_job(printer: str, job_id: int, expected: int, log=print, sleep=None) -> bool:
+def report(**fields) -> str:
+    """A machine-readable progress line the page uses to track each job."""
+    return "JOB " + json.dumps(fields)
+
+
+def wait_for_job(printer: str, job_id: int, expected: int, log=print, sleep=None,
+                 progress=None) -> bool:
     """Wait until the printer has finished this job, so jobs never run at the same
     time (some network printers interleave their pages). True if it printed fully."""
     import time
     sleep = sleep or time.sleep
     waited = 0
     limit = max(JOB_TIMEOUT_S, expected * 15)   # ~4 pages/min worst case, incl. paper refills
+    last = None
     while waited < limit:
         state, sheets = job_status(printer, job_id)
+        if progress and (state, sheets) != last:
+            progress(state, sheets)
+            last = (state, sheets)
         if state in ("completed", "canceled", "aborted"):
             if state != "completed":
                 log(f"  job {job_id} was {state} after {sheets or 0} of {expected} sheets")
@@ -267,32 +277,52 @@ def send(jobs: list[tuple[str, Path, str]], printer: str, dry_run: bool = False,
     """Print (title, pdf, sides) jobs one at a time. Returns how many failed."""
     import re
     failed = 0
-    for title, pdf, sides in jobs:
+    if not dry_run:
+        for i, (title, pdf, sides) in enumerate(jobs):
+            log(report(i=i, title=title, state="waiting", expected=_sheets(pdf, sides)))
+    for i, (title, pdf, sides) in enumerate(jobs):
         n = pages(pdf)
         desc = f"{title}: {n} side{'s' if n != 1 else ''}" + (
             "" if sides == "one" else f", double-sided ({sides} edge)")
         if dry_run:
             log(f"[dry run] {desc} -> {printer}")
             continue
+        expected = _sheets(pdf, sides)
         r = subprocess.run(print_command(pdf, printer, title, sides), capture_output=True, text=True)
         if r.returncode != 0:
             failed += 1
+            log(report(i=i, title=title, state="failed", expected=expected))
             log(f"FAILED {title}: {(r.stderr or r.stdout).strip()[:300]}")
             continue
         m = re.search(r"request id is \S+-(\d+)", r.stdout)
-        if not (wait and m and not IS_WIN):
+        job_id = int(m.group(1)) if m else None
+        if not (wait and job_id and not IS_WIN):
+            log(report(i=i, title=title, state="sent", job=job_id, expected=expected))
             log(f"Sent {desc} to {printer}")
             continue
-        log(f"Printing {desc} (job {m.group(1)})...")
-        expected = n if sides == "one" else (n + 1) // 2
-        if wait_for_job(printer, int(m.group(1)), expected, log):
+        log(f"Printing {desc} (job {job_id})...")
+        log(report(i=i, title=title, state="sent", job=job_id, sheets=0, expected=expected))
+
+        def progress(state, sheets, i=i, title=title, job_id=job_id, expected=expected):
+            log(report(i=i, title=title, state=state, job=job_id, sheets=sheets or 0,
+                       expected=expected))
+        if wait_for_job(printer, job_id, expected, log, progress=progress):
+            log(report(i=i, title=title, state="done", job=job_id, sheets=expected, expected=expected))
             log(f"  done: {title}")
         else:
             failed += 1
+            log(report(i=i, title=title, state="failed", job=job_id, expected=expected))
+            for k in range(i + 1, len(jobs)):
+                log(report(i=k, title=jobs[k][0], state="not sent", expected=_sheets(jobs[k][1], jobs[k][2])))
             log(f"STOPPED: {title} didn't finish. Nothing else was sent. Check the printer, "
                 f"then print the rest with --cub.")
             break
     return failed
+
+
+def _sheets(pdf: Path, sides: str) -> int:
+    n = pages(pdf)
+    return n if sides == "one" else (n + 1) // 2
 
 
 def print_all(files, printer: str, dry_run: bool = False, log=print) -> int:

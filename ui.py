@@ -320,6 +320,9 @@ details summary{cursor:pointer;color:var(--muted)}
 ul.checks{list-style:none;padding:0;margin:10px 0 0}ul.checks li{padding:4px 0;border-bottom:1px solid var(--line)}
 .fix{color:var(--muted);font-size:14px;margin-left:16px}
 a{color:var(--green)}footer{color:var(--muted);font-size:14px;text-align:center}
+#jobs td,#jobs th{padding:5px 6px;border-bottom:1px solid var(--line)}
+.st-done{color:var(--ok);font-weight:600}.st-failed{color:var(--err);font-weight:600}.st-printing{color:var(--green);font-weight:600}
+.st-waiting,.st-notsent{color:var(--muted)}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--green);border-radius:50%;animation:s 1s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes s{to{transform:rotate(360deg)}}
 </style></head><body><main>
@@ -366,11 +369,15 @@ a{color:var(--green)}footer{color:var(--muted);font-size:14px;text-align:center}
   <div id="autoprint" style="margin-top:10px">
     <div class="row">
       <button id="testprint">Print a test sheet</button>
-      <label>Cub <select id="acub"></select></label>
-      <button id="printall" class="primary" style="font-size:16px;padding:9px 16px">Print this Cub</button>
+      <button id="printall" class="primary" style="font-size:16px;padding:9px 16px">Print all Cubs</button>
     </div>
-    <p class="fix" style="margin:8px 0 0">Pick a Cub and print just their passport; the next Cub is then selected.
-    Or choose <b>All Cubs</b>: each Cub prints as its own job, one after another.</p>
+    <div class="row" style="margin-top:10px">
+      <label>Cub <select id="acub"></select></label>
+      <button id="printone">Print this Cub</button>
+    </div>
+    <p class="fix" style="margin:8px 0 0"><b>Print all Cubs</b> prints every Cub as its own job, back to back
+    (each one starts when the previous has finished, so pages never mix). Or print one Cub at a time;
+    the next Cub is then selected.</p>
   </div>
   <div id="manualprint" hidden style="margin-top:10px">
     <p class="fix" style="margin:0 0 8px">Your printer prints one side, so each booklet is printed in two passes,
@@ -389,6 +396,10 @@ a{color:var(--green)}footer{color:var(--muted);font-size:14px;text-align:center}
     </div>
   </div>
   <div class="msg" id="pmsg"></div>
+  <table id="jobs" hidden style="width:100%;border-collapse:collapse;margin-top:12px;font-size:14px">
+    <thead><tr style="text-align:left;color:var(--muted)"><th>Cub</th><th>Job</th><th>Sheets</th><th>Status</th></tr></thead>
+    <tbody></tbody>
+  </table>
 </section>
 
 <section class="card">
@@ -447,9 +458,18 @@ async function poll(){
   if(polling)return;polling=true;
   while(true){
     const {j}=await api("/api/job?since="+since);
-    if(j.lines.length){$("log").textContent+=j.lines.join("\n")+"\n";$("log").scrollTop=1e9;since=j.total}
+    if(j.lines.length){
+      const shown=j.lines.filter(l=>!l.startsWith("JOB "));
+      for(const l of j.lines) if(l.startsWith("JOB ")) { try{ trackJob(JSON.parse(l.slice(4))) }catch(e){} }
+      if(shown.length){$("log").textContent+=shown.join("\n")+"\n";$("log").scrollTop=1e9}
+      since=j.total}
     const last=j.lines.filter(l=>l.startsWith("=== ")).pop();
-    if(j.running){$("jobstate").innerHTML=`<span class="spinner"></span>${esc(j.name)}… ${last?esc(last.replace(/=/g,"").trim()):""}`;busy(true)}
+    if(j.running){
+      const cur=j.name==="Printing"?($("log").textContent.trim().split("\n").filter(l=>/^(Printing|  done)/.test(l)).pop()||""):"";
+      const done=($("log").textContent.match(/^  done:/gm)||[]).length;
+      $("jobstate").innerHTML=`<span class="spinner"></span>${esc(j.name)}… ${last?esc(last.replace(/=/g,"").trim()):""}`;
+      if(j.name==="Printing"){msgTarget="pmsg";msg(`<span class="spinner"></span>${done} finished. ${esc(cur.replace(/^Printing /,"Now printing: "))}`,"note")}
+      busy(true)}
     else{
       busy(false);$("jobstate").textContent="";
       if(j.name){done(j)}
@@ -482,7 +502,23 @@ function done(j){
   } else if(j.name==="Checking setup"){ loadChecks(); msg(j.exit_code===0?"Setup looks good.":"Some setup checks failed. See the list under <b>Sign in &amp; setup</b>.",j.exit_code===0?"good":"bad") }
 }
 
-function busy(b){for(const id of ["go","login","check","printall","testprint","mtestf","mtestb","mfronts","mbacks"])$(id).disabled=b}
+const LABEL={"waiting":"Waiting","sent":"Sent","pending":"In printer queue","pending-held":"Held at printer",
+  "processing":"Printing","processing-stopped":"Paused (check printer)","completed":"Finishing","done":"Done",
+  "failed":"Failed","canceled":"Cancelled","aborted":"Failed","not sent":"Not sent"};
+let jobRows={};
+function trackJob(e){
+  $("jobs").hidden=false;
+  const tb=$("jobs").tBodies[0];
+  let tr=jobRows[e.i];
+  if(!tr){ tr=jobRows[e.i]=tb.insertRow(); for(let k=0;k<4;k++) tr.insertCell() }
+  const name=e.title.replace(/^(TEST )?Passports? (fronts|backs)? ?- /,"").replace(/^Passport - /,"");
+  const cls="st-"+({done:"done",failed:"failed",aborted:"failed",canceled:"failed","not sent":"notsent",waiting:"waiting"}[e.state]||"printing");
+  tr.cells[0].textContent=name;
+  tr.cells[1].textContent=e.job?("#"+e.job):"";
+  tr.cells[2].textContent=(e.sheets!=null?e.sheets:"")+(e.expected?` / ${e.expected}`:"");
+  tr.cells[3].innerHTML=`<span class="${cls}">${esc(LABEL[e.state]||e.state)}</span>`;
+}
+function busy(b){for(const id of ["go","login","check","printall","printone","testprint","mtestf","mtestb","mfronts","mbacks"])$(id).disabled=b}
 
 let sheetsTotal=0,printers={duplex:{}},lastPrint={},cubCount=0;
 const store={get:(k,d)=>{try{return localStorage.getItem(k)??d}catch(e){return d}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
@@ -498,10 +534,9 @@ async function loadPrinters(){
 async function loadCubs(){
   const {j}=await api("/api/cubs"); cubCount=j.cubs.length;
   $("mcub").innerHTML=j.cubs.map(c=>`<option>${esc(c)}</option>`).join("");
-  $("acub").innerHTML=j.cubs.map(c=>`<option>${esc(c)}</option>`).join("")+`<option value="">All Cubs (one after another)</option>`;
+  $("acub").innerHTML=j.cubs.map(c=>`<option>${esc(c)}</option>`).join("");
 }
-function nextCub(id="mcub"){const s=$(id);if(s.selectedIndex<s.options.length-(id==="acub"?2:1))s.selectedIndex++;printLabel()}
-function printLabel(){$("printall").textContent=$("acub").value?"Print this Cub":"Print all Cubs"}
+function nextCub(id="mcub"){const s=$(id);if(s.selectedIndex<s.options.length-1)s.selectedIndex++}
 function printUI(){
   const layout=$("layout").value,p=$("printer").value,duplex=!!printers.duplex[p];
   const manual=layout==="booklet"&&!duplex;
@@ -526,6 +561,7 @@ function doPrint(body){
 
 async function start(path,body,target){
   msgTarget=target||"msg";
+  if(path==="/api/print"){ jobRows={}; $("jobs").tBodies[0].innerHTML=""; $("jobs").hidden=true; }
   $("log").textContent="";since=0;$("msg").className="msg";$("pmsg").className="msg";
   const {ok,j}=await api(path,{method:"POST",body:JSON.stringify(body||{})});
   if(!ok){msg(j.error==="busy"?"Something is already running. Please wait.":
@@ -544,12 +580,8 @@ async function loadChecks(){
 
 $("go").onclick=()=>start("/api/run",{stage:+$("stage").value,fetch:$("fetch").checked});
 $("login").onclick=()=>start("/api/login");
-$("printall").onclick=()=>{
-  const cub=$("acub").value;
-  if(cub) doPrint({test:false,cub});
-  else if(confirm(`Print every Cub's passport on ${$("printer").value}, one Cub at a time? About ${sheetsTotal} sheets of paper.`)) doPrint({test:false});
-};
-$("acub").onchange=printLabel;
+$("printall").onclick=()=>{ if(confirm(`Print all ${cubCount} Cubs on ${$("printer").value}, one job per Cub? About ${sheetsTotal} sheets of paper.`)) doPrint({test:false}) };
+$("printone").onclick=()=>doPrint({test:false,cub:$("acub").value});
 $("testprint").onclick=()=>doPrint({test:true});
 const flags=()=>({reverse:$("mrev").checked,rotate:$("mrot").checked});
 $("mtestf").onclick=()=>doPrint({test:true,pass:"fronts"});
