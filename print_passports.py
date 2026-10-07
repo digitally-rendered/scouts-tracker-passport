@@ -21,6 +21,11 @@ Other options:
     --printer NAME       default: the system default printer
     --yes                don't ask before printing
 
+Everything is sent as ONE print job (each Cub's sheets together, in name order),
+because some network printers interleave pages from jobs sent at the same time.
+With --separate-jobs, each job is sent only after the previous one has finished
+printing (and its sheet count is checked); if one fails, nothing after it is sent.
+
 macOS/Linux print with lp. Windows uses SumatraPDF if installed (exact size,
 double-sided control) and otherwise the default PDF app.
 """
@@ -205,8 +210,62 @@ def manual_pass(files: list[tuple[str, Path]], which: str, reverse: bool = False
     return out
 
 
-def send(jobs: list[tuple[str, Path, str]], printer: str, dry_run: bool = False, log=print) -> int:
-    """Print (title, pdf, sides) jobs. Returns how many failed."""
+JOB_TIMEOUT_S = 20 * 60     # minimum; grows with the job (see wait_for_job)
+POLL_S = 3
+
+_JOB_TEST = """{ NAME "job" OPERATION Get-Job-Attributes
+  GROUP operation-attributes-tag
+  ATTR charset attributes-charset utf-8
+  ATTR naturalLanguage attributes-natural-language en
+  ATTR uri printer-uri $uri
+  ATTR integer job-id %d
+  ATTR keyword requested-attributes job-state,job-media-sheets-completed
+  DISPLAY job-state
+  DISPLAY job-media-sheets-completed
+}"""
+
+
+def job_status(printer: str, job_id: int) -> tuple[str, int | None]:
+    """(state, sheets printed) from the local print system, e.g. ("completed", 16)."""
+    import re
+    test = _tmp("job.test")
+    test.write_text(_JOB_TEST % job_id)
+    out = _run(["ipptool", "-tv", f"ipp://localhost/printers/{printer}", str(test)])
+    state = re.search(r"job-state \(enum\) = (\S+)", out)
+    sheets = re.search(r"job-media-sheets-completed \(integer\) = (\d+)", out)
+    return (state.group(1) if state else "unknown"), (int(sheets.group(1)) if sheets else None)
+
+
+def wait_for_job(printer: str, job_id: int, expected: int, log=print, sleep=None) -> bool:
+    """Wait until the printer has finished this job, so jobs never run at the same
+    time (some network printers interleave their pages). True if it printed fully."""
+    import time
+    sleep = sleep or time.sleep
+    waited = 0
+    limit = max(JOB_TIMEOUT_S, expected * 15)   # ~4 pages/min worst case, incl. paper refills
+    while waited < limit:
+        state, sheets = job_status(printer, job_id)
+        if state in ("completed", "canceled", "aborted"):
+            if state != "completed":
+                log(f"  job {job_id} was {state} after {sheets or 0} of {expected} sheets")
+                return False
+            if sheets is not None and sheets < expected:
+                log(f"  job {job_id} finished but the printer reported {sheets} of {expected} sheets")
+                return False
+            return True
+        if state == "unknown":          # can't ask (e.g. no ipptool): fall back to the queue list
+            if f"{printer}-{job_id} " not in _run(["lpstat", "-W", "not-completed", "-o", printer]):
+                return True
+        sleep(POLL_S)
+        waited += POLL_S
+    log(f"  stopped watching job {job_id} after {limit // 60} minutes (it may still be printing)")
+    return False
+
+
+def send(jobs: list[tuple[str, Path, str]], printer: str, dry_run: bool = False, log=print,
+         wait: bool = True) -> int:
+    """Print (title, pdf, sides) jobs one at a time. Returns how many failed."""
+    import re
     failed = 0
     for title, pdf, sides in jobs:
         n = pages(pdf)
@@ -216,11 +275,23 @@ def send(jobs: list[tuple[str, Path, str]], printer: str, dry_run: bool = False,
             log(f"[dry run] {desc} -> {printer}")
             continue
         r = subprocess.run(print_command(pdf, printer, title, sides), capture_output=True, text=True)
-        if r.returncode == 0:
-            log(f"Sent {desc} to {printer}")
-        else:
+        if r.returncode != 0:
             failed += 1
             log(f"FAILED {title}: {(r.stderr or r.stdout).strip()[:300]}")
+            continue
+        m = re.search(r"request id is \S+-(\d+)", r.stdout)
+        if not (wait and m and not IS_WIN):
+            log(f"Sent {desc} to {printer}")
+            continue
+        log(f"Printing {desc} (job {m.group(1)})...")
+        expected = n if sides == "one" else (n + 1) // 2
+        if wait_for_job(printer, int(m.group(1)), expected, log):
+            log(f"  done: {title}")
+        else:
+            failed += 1
+            log(f"STOPPED: {title} didn't finish. Nothing else was sent. Check the printer, "
+                f"then print the rest with --cub.")
+            break
     return failed
 
 
@@ -237,8 +308,20 @@ AFTER = {
 }
 
 
+def combine(files: list[tuple[str, Path]]) -> Path:
+    """One PDF with every Cub's sheets back to back (each Cub's together, in order)."""
+    out = _tmp(f"Passports - {len(files)} Cubs.pdf")
+    with pymupdf.open() as combined:
+        for _, pdf in files:
+            with pymupdf.open(pdf) as d:
+                combined.insert_pdf(d)
+        combined.save(out, garbage=3, deflate=True)
+    return out
+
+
 def plan_jobs(files, layout: str, duplex: bool, which: str | None, test: bool,
-              reverse: bool = False, rotate: bool = False) -> tuple[list, str]:
+              reverse: bool = False, rotate: bool = False,
+              one_job: bool = True) -> tuple[list, str]:
     """Work out the print jobs. Returns (jobs, what to do afterwards)."""
     edge = LAYOUTS[layout][2]
     if test:
@@ -265,12 +348,13 @@ def plan_jobs(files, layout: str, duplex: bool, which: str | None, test: bool,
                          "passes: --pass fronts, reload the paper, then --pass backs.")
     sides = edge if (edge and duplex) else "one"
     per_sheet = 2 if sides != "one" else 1
-    jobs = []
-    for name, pdf in files:
-        if test:
-            pdf = first_sheet_copy(pdf, per_sheet)
-        jobs.append((f"Passport - {name}{' (test sheet)' if test else ''}", pdf, sides))
-    return jobs, AFTER[layout]
+    if test:
+        name, pdf = files[0]
+        return [(f"Passport - {name} (test sheet)", first_sheet_copy(pdf, per_sheet), sides)], AFTER[layout]
+    if one_job and len(files) > 1:
+        # A single job can't be interleaved with anything else by the printer.
+        return [(f"Passports - {len(files)} Cubs", combine(files), sides)], AFTER[layout]
+    return [(f"Passport - {name}", pdf, sides) for name, pdf in files], AFTER[layout]
 
 
 def main() -> int:
@@ -291,6 +375,10 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="show what would print, use no paper")
     ap.add_argument("--yes", action="store_true", help="don't ask for confirmation")
     ap.add_argument("--test-sheet", action="store_true", help="just the first sheet of one Cub")
+    ap.add_argument("--separate-jobs", action="store_true",
+                    help="one print job per Cub instead of one job for everyone")
+    ap.add_argument("--no-wait", action="store_true",
+                    help="send every job at once instead of one after another (not recommended)")
     a = ap.parse_args()
 
     printers, default = list_printers()
@@ -316,7 +404,7 @@ def main() -> int:
     out_dir = Path(a.dir) if a.dir else latest_out_dir()
     files = layout_files(out_dir, a.layout, a.cub)
     jobs, after = plan_jobs(files, a.layout, duplex, a.which, a.test_sheet,
-                            a.reverse_backs, a.rotate_backs)
+                            a.reverse_backs, a.rotate_backs, one_job=not a.separate_jobs)
     total = sum(pages(p) for _, p, _ in jobs)
     two = any(s != "one" for _, _, s in jobs)
     sheets = (total + 1) // 2 if two else total
@@ -329,7 +417,7 @@ def main() -> int:
         if input(f"Print {sheets} sheet(s) now? [y/N] ").strip().lower() not in ("y", "yes"):
             print("Nothing printed.")
             return 0
-    failed = send(jobs, printer, a.dry_run)
+    failed = send(jobs, printer, a.dry_run, wait=not a.no_wait)
     if not a.dry_run:
         print("\n" + (after if not failed else
                       f"{failed} job(s) failed - check the printer, then reprint those Cubs with --cub."))

@@ -88,10 +88,22 @@ def test_duplex_detection(monkeypatch, options, expected):
 
 # ------------------------------------------------------------- planning --
 
-def test_booklet_on_duplex_printer_is_one_short_edge_job_per_cub(out_dir):
-    jobs, after = pp.plan_jobs(pp.layout_files(out_dir, "booklet"), "booklet", True, None, False)
+def test_print_all_is_one_job_with_each_cub_together(out_dir):
+    files = pp.layout_files(out_dir, "4up")
+    (title, pdf, sides), = pp.plan_jobs(files, "4up", False, None, False)[0]
+    assert title == "Passports - 3 Cubs" and sides == "one"
+    assert pp.pages(pdf) == sum(pp.pages(f) for _, f in files)
+    with pymupdf.open(pdf) as d:
+        owners = [next(n for n, _ in files if n in p.get_text()) for p in d]
+    assert owners == sorted(owners)            # Alex..., then Blair..., then Casey... - never mixed
+
+
+def test_booklet_on_duplex_printer_is_short_edge(out_dir):
+    files = pp.layout_files(out_dir, "booklet")
+    jobs, after = pp.plan_jobs(files, "booklet", True, None, False, one_job=False)
     assert len(jobs) == 3 and all(sides == "short" for _, _, sides in jobs)
-    assert "fold" in after.lower()
+    (_, _, sides), = pp.plan_jobs(files, "booklet", True, None, False)[0]
+    assert sides == "short" and "fold" in after.lower()
 
 
 def test_booklet_on_single_sided_printer_needs_two_passes(out_dir):
@@ -153,3 +165,55 @@ def test_one_job_per_cub_and_failures_counted(out_dir, monkeypatch):
     assert [c[4] for c in sent] == [
         "Passport - Alex Tester", "Passport - Blair Example", "Passport - Casey Sample"]
     assert any(l.startswith("FAILED Passport - Blair Example") for l in lines)
+
+
+# ------------------------------------------------- one job at a time --
+
+def test_waits_for_each_job_before_sending_the_next(out_dir, monkeypatch):
+    events, next_id = [], iter(range(500, 600))
+    monkeypatch.setattr(pp, "IS_WIN", False)
+
+    def fake_run(cmd, **k):
+        jid = next(next_id)
+        events.append(("sent", cmd[4], jid))
+        return subprocess.CompletedProcess(cmd, 0, f"request id is P-{jid} (1 file(s))\n", "")
+    polls = {}
+
+    def fake_status(printer, jid):
+        polls[jid] = polls.get(jid, 0) + 1
+        events.append(("poll", jid))
+        return ("processing", 3) if polls[jid] < 3 else ("completed", 16)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(pp, "job_status", fake_status)
+    monkeypatch.setattr(pp, "pages", lambda pdf: 16)
+    files = pp.layout_files(out_dir, "4up")
+    jobs = [(f"Passport - {n}", f, "one") for n, f in files]
+    assert pp.send(jobs, "P", log=lambda m: None, wait=True) == 0
+    sent_at = [i for i, e in enumerate(events) if e[0] == "sent"]
+    # every job's last poll (completed) happens before the next job is sent
+    for a, b in zip(sent_at, sent_at[1:]):
+        jid = events[a][2]
+        assert ("poll", jid) in events[a:b] and polls[jid] == 3
+
+
+def test_stops_when_a_job_prints_short(out_dir, monkeypatch):
+    monkeypatch.setattr(pp, "IS_WIN", False)
+    sent = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: sent.append(cmd) or
+                        subprocess.CompletedProcess(cmd, 0, f"request id is P-{len(sent)} (1 file(s))", ""))
+    monkeypatch.setattr(pp, "job_status", lambda p, j: ("completed", 10))   # 10 of 16
+    monkeypatch.setattr(pp, "pages", lambda pdf: 16)
+    lines = []
+    files = pp.layout_files(out_dir, "4up")
+    assert pp.send([(n, f, "one") for n, f in files], "P", log=lines.append) == 1
+    assert len(sent) == 1                                   # nothing after the bad job
+    assert any("10 of 16" in l for l in lines) and any(l.startswith("STOPPED") for l in lines)
+
+
+def test_double_sided_expects_half_the_sides_as_sheets(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pp, "job_status", lambda p, j: ("completed", 16))
+    assert pp.wait_for_job("P", 1, 16, log=lambda m: None)
+    monkeypatch.setattr(pp, "job_status", lambda p, j: ("aborted", 2))
+    assert not pp.wait_for_job("P", 1, 16, log=lambda m: seen.setdefault("m", m))
+    assert "aborted" in seen["m"]
