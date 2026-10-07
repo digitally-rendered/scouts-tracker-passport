@@ -137,6 +137,18 @@ Under **Print**, choose your printer, click **Print a test sheet**, then **Print
 Each Cub is sent as its own print job. From a terminal: `uv run python print_passports.py --dry-run`
 shows what would print; drop `--dry-run` to print, and add `--cub "First Last"` for one Cub.
 
+### Booklet backs come out upside down, or on the wrong sheet
+That depends on how your printer feeds paper, which is why there's a test sheet. On the page
+(booklet layout, one-sided printer): tick **Turn backs upside down** if the back was upside
+down, and **Reverse backs** if the backs landed on the wrong sheets. Then repeat
+**Test: print front** / **Test: print back** until the folded test sheet is right.
+The page remembers both settings. Reload the printed stack **printed side up**, turned over like a page.
+
+### "This printer can't print both sides by itself"
+From the terminal, a booklet on a one-sided printer needs two passes:
+`--layout booklet --pass fronts`, reload the paper, then `--layout booklet --pass backs`.
+The page does this for you, one Cub at a time.
+
 ### "No printers found"
 Add the printer in your computer's settings first (Mac: System Settings → Printers & Scanners;
 Windows: Settings → Bluetooth & devices → Printers & scanners), then reopen the page.

@@ -1,48 +1,72 @@
-"""Send the 4-up print files straight to a printer, one job per Cub.
+"""Send the passports straight to a printer.
 
-Each Cub is a separate print job (in name order) so their stacks stay apart
-in the output tray. Printing is single-sided, letter, actual size.
+Layouts (--layout):
+  4up       4 pages per letter sheet, single-sided; cut and stack   (default)
+  booklet   full size, 2 pages per side; print both sides, fold, staple on the fold
+  fullsize  full size, 1 page per sheet; both sides if the printer can
 
-    python print_passports.py --list                 # show printers
-    python print_passports.py --dry-run              # show what would print
-    python print_passports.py                        # print every Cub (asks first)
-    python print_passports.py --cub "First Last"     # just one Cub (repeatable)
-    python print_passports.py --printer NAME --yes   # no question (used by the page)
-    python print_passports.py --test-sheet           # one sheet only, to check size
+Double-sided (--duplex auto|yes|no): "auto" asks the printer. If the printer
+can't print both sides, booklets are printed in two passes ("manual duplex"):
 
-macOS/Linux use the built-in print system (lp). Windows uses SumatraPDF if it
-is installed (exact size, recommended) and otherwise the default PDF app.
+    print_passports.py --layout booklet --pass fronts      # 1. fronts
+    (put the printed stack back in the paper tray)
+    print_passports.py --layout booklet --pass backs       # 2. backs
+    add --reverse-backs and/or --rotate-backs if the test sheet came out wrong
+
+Other options:
+    --list               show printers (and which print both sides)
+    --dry-run            show what would print, use no paper
+    --test-sheet         just the first sheet of one Cub
+    --cub "First Last"   only this Cub (repeatable)
+    --printer NAME       default: the system default printer
+    --yes                don't ask before printing
+
+macOS/Linux print with lp. Windows uses SumatraPDF if installed (exact size,
+double-sided control) and otherwise the default PDF app.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import pymupdf  # noqa: E402
+
 from paths import OUT_DIR  # noqa: E402
+from print_layout import LAYOUTS  # noqa: E402
 
 IS_WIN = platform.system() == "Windows"
-SUFFIX = " - Passport 2026 - print 4-up.pdf"
-COMBINED = "ALL CUBS - print 4-up.pdf"
+PASSPORT_SUFFIX = " - Passport 2026.pdf"
 
 
 # ---------------------------------------------------------------- printers --
+
+def _run(cmd: list[str]) -> str:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _ps_quote(v) -> str:
+    return str(v).replace("'", "''")
+
 
 def list_printers() -> tuple[list[str], str | None]:
     """(printer names, default printer)."""
     if IS_WIN:
         ps = ("Get-Printer | Select-Object Name | ConvertTo-Json -Compress; "
               "'---'; (Get-CimInstance Win32_Printer | Where-Object Default).Name")
-        out = _run(["powershell", "-NoProfile", "-Command", ps])
-        js, _, default = out.partition("---")
-        import json
+        js, _, default = _run(["powershell", "-NoProfile", "-Command", ps]).partition("---")
         try:
             data = json.loads(js.strip() or "[]")
         except json.JSONDecodeError:
@@ -57,11 +81,19 @@ def list_printers() -> tuple[list[str], str | None]:
     return names, default
 
 
-def _run(cmd: list[str]) -> str:
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
+def printer_duplex(printer: str) -> bool:
+    """Can this printer print both sides by itself?"""
+    if IS_WIN:
+        ps = (f"(Get-CimInstance Win32_Printer -Filter \"Name='{_ps_quote(printer)}'\")"
+              ".CapabilityDescriptions -contains 'Duplex'")
+        return _run(["powershell", "-NoProfile", "-Command", ps]).strip().lower() == "true"
+    for line in _run(["lpoptions", "-p", printer, "-l"]).splitlines():
+        key, _, values = line.partition(":")
+        if key.split("/")[0] in ("Duplex", "sides", "KMDuplex", "EFDuplex"):
+            v = values.lower()
+            if "tumble" in v or "two-sided" in v:
+                return True
+    return False
 
 
 def find_sumatra() -> str | None:
@@ -76,88 +108,189 @@ def find_sumatra() -> str | None:
     return None
 
 
-def print_command(pdf: Path, printer: str, title: str) -> list[str]:
-    """The command that prints one file single-sided, letter, actual size."""
+def print_command(pdf: Path, printer: str, title: str, sides: str = "one") -> list[str]:
+    """Command printing one file, letter, actual size. sides: one | long | short."""
     if not IS_WIN:
+        lp_sides = {"one": "one-sided", "long": "two-sided-long-edge",
+                    "short": "two-sided-short-edge"}[sides]
         return ["lp", "-d", printer, "-t", title, "-o", "media=Letter",
-                "-o", "sides=one-sided", "-o", "print-scaling=none", "-o", "fit-to-page=false",
+                "-o", f"sides={lp_sides}", "-o", "print-scaling=none", "-o", "fit-to-page=false",
                 str(pdf)]
     sumatra = find_sumatra()
     if sumatra:
-        return [sumatra, "-print-to", printer, "-print-settings", "noscale,simplex,paper=letter",
+        mode = {"one": "simplex", "long": "duplexlong", "short": "duplexshort"}[sides]
+        return [sumatra, "-print-to", printer, "-print-settings", f"noscale,{mode},paper=letter",
                 "-silent", str(pdf)]
-    # Fallback: the default PDF app's "print to" verb (it may scale pages).
-    q = lambda v: str(v).replace("'", "''")  # noqa: E731  (PowerShell single-quote escaping)
+    # Fallback: the default PDF app's "print to" verb (may scale; no 2-sided control).
     return ["powershell", "-NoProfile", "-Command",
-            f"Start-Process -FilePath '{q(pdf)}' -Verb PrintTo "
-            f"-ArgumentList '\"{q(printer)}\"' -Wait"]
+            f"Start-Process -FilePath '{_ps_quote(pdf)}' -Verb PrintTo "
+            f"-ArgumentList '\"{_ps_quote(printer)}\"' -Wait"]
 
 
 # ------------------------------------------------------------------- files --
 
-def latest_print_dir() -> Path:
-    dirs = sorted(p / "print 4-up" for p in OUT_DIR.glob("20*-*-*") if (p / "print 4-up").is_dir())
+def latest_out_dir() -> Path:
+    dirs = sorted(p for p in OUT_DIR.glob("20*-*-*") if (p / "fill_log.json").exists())
     if not dirs:
-        raise SystemExit("No print files yet - make the passports first.")
+        raise SystemExit("No passports yet - make the passports first.")
     return dirs[-1]
 
 
-def cub_files(print_dir: Path, only: list[str] | None = None) -> list[tuple[str, Path]]:
-    files = sorted((f.name[: -len(SUFFIX)], f) for f in print_dir.glob(f"*{SUFFIX}"))
+def layout_files(out_dir: Path, layout: str, only: list[str] | None = None) -> list[tuple[str, Path]]:
+    """[(Cub name, print-ready PDF)] for a layout, making missing files from the passports."""
+    folder, maker, _ = LAYOUTS[layout]
+    cubs = sorted(json.loads((out_dir / "fill_log.json").read_text(encoding="utf-8"))["cubs"])
     if only:
         wanted = {n.strip().lower() for n in only}
-        files = [(n, f) for n, f in files if n.lower() in wanted]
-        missing = wanted - {n.lower() for n, _ in files}
+        missing = wanted - {c.lower() for c in cubs}
         if missing:
-            raise SystemExit(f"No print file for: {', '.join(sorted(missing))}")
+            raise SystemExit(f"No passport for: {', '.join(sorted(missing))}")
+        cubs = [c for c in cubs if c.lower() in wanted]
+    (out_dir / folder).mkdir(exist_ok=True)
+    files = []
+    for cub in cubs:
+        src = out_dir / f"{cub}{PASSPORT_SUFFIX}"
+        dst = out_dir / folder / f"{src.stem} - {folder}.pdf"
+        if not src.exists():
+            raise SystemExit(f"Missing passport for {cub}: {src.name}")
+        if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime:
+            if layout == "4up":
+                maker(src, dst, src.stem, cub)
+            else:
+                maker(src, dst, cub)
+        files.append((cub, dst))
     return files
 
 
-def first_sheet_copy(pdf: Path) -> Path:
-    """A one-page copy of the first sheet, for a test print."""
-    import tempfile
-
-    import pymupdf
-    out = Path(tempfile.mkdtemp(prefix="passport-test-")) / f"TEST {pdf.name}"
-    with pymupdf.open(pdf) as d, pymupdf.open() as one:
-        one.insert_pdf(d, from_page=0, to_page=0)
-        one.save(out)
-    return out
-
-
-def sheet_count(pdf: Path) -> int:
-    import pymupdf
+def pages(pdf: Path) -> int:
     with pymupdf.open(pdf) as d:
         return len(d)
 
 
-def print_all(files, printer: str, dry_run: bool = False, log=print) -> int:
-    """Send each Cub as its own job. Returns the number of jobs that failed."""
+def _tmp(name: str) -> Path:
+    return Path(tempfile.mkdtemp(prefix="passport-print-")) / name
+
+
+def first_sheet_copy(pdf: Path, sides_per_sheet: int = 1) -> Path:
+    """A copy with just the first sheet (1 side, or front+back)."""
+    out = _tmp(f"TEST {pdf.name}")
+    with pymupdf.open(pdf) as d, pymupdf.open() as one:
+        one.insert_pdf(d, from_page=0, to_page=min(sides_per_sheet, len(d)) - 1)
+        one.save(out)
+    return out
+
+
+def manual_pass(files: list[tuple[str, Path]], which: str, reverse: bool = False,
+                rotate: bool = False) -> Path:
+    """One PDF of every front (odd sides) or every back (even sides), all Cubs in order.
+
+    Backs can be reversed (if the printer stacks pages the other way round) and/or
+    turned upside down (if the backs came out upside down on the test sheet)."""
+    start = 0 if which == "fronts" else 1
+    out = _tmp(f"{which}.pdf")
+    with pymupdf.open() as combined:
+        for _, pdf in files:
+            with pymupdf.open(pdf) as d:
+                for i in range(start, len(d), 2):
+                    combined.insert_pdf(d, from_page=i, to_page=i)
+        if which == "backs":
+            order = list(range(len(combined)))
+            if reverse:
+                order.reverse()
+            combined.select(order)
+            if rotate:
+                for page in combined:
+                    page.set_rotation((page.rotation + 180) % 360)
+        combined.save(out)
+    return out
+
+
+def send(jobs: list[tuple[str, Path, str]], printer: str, dry_run: bool = False, log=print) -> int:
+    """Print (title, pdf, sides) jobs. Returns how many failed."""
     failed = 0
-    for name, pdf in files:
-        cmd = print_command(pdf, printer, f"Passport - {name}")
+    for title, pdf, sides in jobs:
+        n = pages(pdf)
+        desc = f"{title}: {n} side{'s' if n != 1 else ''}" + (
+            "" if sides == "one" else f", double-sided ({sides} edge)")
         if dry_run:
-            log(f"[dry run] {name}: {sheet_count(pdf)} sheets -> {printer}")
+            log(f"[dry run] {desc} -> {printer}")
             continue
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(print_command(pdf, printer, title, sides), capture_output=True, text=True)
         if r.returncode == 0:
-            log(f"Sent {name} ({sheet_count(pdf)} sheets) to {printer}")
+            log(f"Sent {desc} to {printer}")
         else:
             failed += 1
-            log(f"FAILED {name}: {(r.stderr or r.stdout).strip()[:300]}")
+            log(f"FAILED {title}: {(r.stderr or r.stdout).strip()[:300]}")
     return failed
 
 
+def print_all(files, printer: str, dry_run: bool = False, log=print) -> int:
+    """Print 4-up files, one single-sided job per Cub."""
+    return send([(f"Passport - {n}", f, "one") for n, f in files], printer, dry_run, log)
+
+
+AFTER = {
+    "4up": "Cut each Cub's stack on the dashed lines, then stack the piles top-left, "
+           "top-right, bottom-left, bottom-right.",
+    "booklet": "Fold each Cub's stack in half (keep it in order) and staple on the fold.",
+    "fullsize": "Each Cub's pages are in order - staple or bind on the left edge.",
+}
+
+
+def plan_jobs(files, layout: str, duplex: bool, which: str | None, test: bool,
+              reverse: bool = False, rotate: bool = False) -> tuple[list, str]:
+    """Work out the print jobs. Returns (jobs, what to do afterwards)."""
+    edge = LAYOUTS[layout][2]
+    if test:
+        files = files[:1]
+
+    if which:                                    # manual double-sided pass
+        if edge is None:
+            raise SystemExit("The 4-per-sheet layout is single-sided; it has no fronts/backs.")
+        src = [(n, first_sheet_copy(f, 2)) for n, f in files] if test else files
+        pdf = manual_pass(src, which, reverse, rotate)
+        who = files[0][0] if len(files) == 1 else f"{len(files)} Cubs"
+        label = f"{'TEST ' if test else ''}Passport {which} - {who}"
+        after = ("Now take the printed stack out, turn it over (printed side up) like turning a "
+                 "page, and put it back in the paper tray. Then print the backs."
+                 if which == "fronts" else
+                 "Check the backs: each sheet's back should belong to the same sheet and be the "
+                 "right way up. If the order is backwards, use 'reverse backs'; if upside down, "
+                 "use 'turn backs upside down' - then try the test sheet again."
+                 if test else AFTER[layout])
+        return [(label, pdf, "one")], after
+
+    if layout == "booklet" and not duplex:
+        raise SystemExit("This printer can't print both sides by itself. Print the booklet in two "
+                         "passes: --pass fronts, reload the paper, then --pass backs.")
+    sides = edge if (edge and duplex) else "one"
+    per_sheet = 2 if sides != "one" else 1
+    jobs = []
+    for name, pdf in files:
+        if test:
+            pdf = first_sheet_copy(pdf, per_sheet)
+        jobs.append((f"Passport - {name}{' (test sheet)' if test else ''}", pdf, sides))
+    return jobs, AFTER[layout]
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Print the passports (4 per sheet), one job per Cub")
+    ap = argparse.ArgumentParser(description="Print the passports",
+                                 formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 epilog=__doc__.split("\n\n", 1)[1])
     ap.add_argument("--list", action="store_true", help="list printers and exit")
     ap.add_argument("--printer", help="printer name (default: the system default)")
+    ap.add_argument("--layout", choices=list(LAYOUTS), default="4up")
+    ap.add_argument("--duplex", choices=["auto", "yes", "no"], default="auto",
+                    help="does the printer print both sides by itself? (default: ask it)")
+    ap.add_argument("--pass", dest="which", choices=["fronts", "backs"],
+                    help="manual double-sided printing: print fronts, reload, print backs")
+    ap.add_argument("--reverse-backs", action="store_true", help="manual pass: backs in reverse order")
+    ap.add_argument("--rotate-backs", action="store_true", help="manual pass: turn backs upside down")
     ap.add_argument("--cub", action="append", help="only this Cub (repeatable)")
-    ap.add_argument("--dir", help="print folder (default: newest out/<date>/print 4-up)")
+    ap.add_argument("--dir", help="passports folder (default: newest out/<date>)")
     ap.add_argument("--dry-run", action="store_true", help="show what would print, use no paper")
     ap.add_argument("--yes", action="store_true", help="don't ask for confirmation")
-    ap.add_argument("--test-sheet", action="store_true",
-                    help="print just the first sheet of one Cub to check size and readability")
+    ap.add_argument("--test-sheet", action="store_true", help="just the first sheet of one Cub")
     a = ap.parse_args()
 
     printers, default = list_printers()
@@ -165,7 +298,8 @@ def main() -> int:
         if not printers:
             print("No printers found. Add one in your computer's printer settings.")
         for p in printers:
-            print(f"{p}{'   (default)' if p == default else ''}")
+            print(f"{p}{'   (default)' if p == default else ''}"
+                  f"{'   prints both sides' if printer_duplex(p) else '   one side only'}")
         return 0
 
     printer = a.printer or default
@@ -173,32 +307,32 @@ def main() -> int:
         raise SystemExit("No default printer. Choose one with --printer (see --list).")
     if printers and printer not in printers:
         raise SystemExit(f"Printer {printer!r} not found. Available: {', '.join(printers)}")
+    duplex = printer_duplex(printer) if a.duplex == "auto" else a.duplex == "yes"
     if IS_WIN and not find_sumatra():
-        print("Note: SumatraPDF isn't installed, so Windows' default PDF app will print and may "
-              "shrink pages. For exact size: winget install SumatraPDF.SumatraPDF")
+        print("Note: SumatraPDF isn't installed, so Windows' default PDF app will print; it may "
+              "shrink pages and can't print both sides. For best results: "
+              "winget install SumatraPDF.SumatraPDF")
 
-    print_dir = Path(a.dir) if a.dir else latest_print_dir()
-    files = cub_files(print_dir, a.cub)
-    if not files:
-        raise SystemExit(f"No print files in {print_dir}")
-    if a.test_sheet:
-        name, pdf = files[0]
-        files = [(f"{name} (test sheet)", first_sheet_copy(pdf))]
-    sheets = sum(sheet_count(f) for _, f in files)
-    print(f"{len(files)} passport(s), {sheets} sheets, single-sided, to {printer} "
-          f"(from {print_dir.parent.name})")
+    out_dir = Path(a.dir) if a.dir else latest_out_dir()
+    files = layout_files(out_dir, a.layout, a.cub)
+    jobs, after = plan_jobs(files, a.layout, duplex, a.which, a.test_sheet,
+                            a.reverse_backs, a.rotate_backs)
+    total = sum(pages(p) for _, p, _ in jobs)
+    two = any(s != "one" for _, _, s in jobs)
+    sheets = (total + 1) // 2 if two else total
+    print(f"{a.layout}: {len(jobs)} job(s), {sheets} sheet(s) of paper"
+          f"{', double-sided' if two else ''}, to {printer} (passports from {out_dir.name})")
 
     if not a.dry_run and not a.yes:
         if not sys.stdin.isatty():
             raise SystemExit("Add --yes to print without asking.")
-        if input(f"Print {sheets} sheets now? [y/N] ").strip().lower() not in ("y", "yes"):
+        if input(f"Print {sheets} sheet(s) now? [y/N] ").strip().lower() not in ("y", "yes"):
             print("Nothing printed.")
             return 0
-    failed = print_all(files, printer, a.dry_run)
+    failed = send(jobs, printer, a.dry_run)
     if not a.dry_run:
-        print("\nAll sent. Cut each Cub's stack on the dashed lines, then stack the piles "
-              "top-left, top-right, bottom-left, bottom-right." if not failed else
-              f"\n{failed} job(s) failed - check the printer and try those Cubs again with --cub.")
+        print("\n" + (after if not failed else
+                      f"{failed} job(s) failed - check the printer, then reprint those Cubs with --cub."))
     return 1 if failed else 0
 
 
