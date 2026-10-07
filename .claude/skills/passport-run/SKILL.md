@@ -23,6 +23,9 @@ shortcut). Suggest it for people who prefer clicking. The steps below are the te
      Cut each Cub's stack on the dashed lines, then stack the piles top-left, top-right,
      bottom-left, bottom-right — pages come out in order. Every page has the Cub's name underneath.
    - `out/<date>/audit.html` — the check report
+5. Printing: `uv run python print_passports.py --list` shows printers. Always run with `--dry-run`
+   first and tell them the sheet count. **Ask before sending a real print job** (it uses paper).
+   Suggest `--test-sheet` first, then the full run with `--yes`. Each Cub is its own job.
 Use `/passport-audit-explain` for detail on any audit finding.
 
 ## Getting help

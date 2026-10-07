@@ -123,7 +123,25 @@ Click **Make passports** with **Get the latest from ScoutsTracker** ticked.
 
 ## Printing
 
-### Which file do I print?
+### Printing from the page
+Under **Print**, choose your printer, click **Print a test sheet**, then **Print all passports**.
+Each Cub is sent as its own print job. From a terminal: `uv run python print_passports.py --dry-run`
+shows what would print; drop `--dry-run` to print, and add `--cub "First Last"` for one Cub.
+
+### "No printers found"
+Add the printer in your computer's settings first (Mac: System Settings → Printers & Scanners;
+Windows: Settings → Bluetooth & devices → Printers & scanners), then reopen the page.
+
+### Pages come out shrunk or not centred (Windows)
+Without SumatraPDF, Windows hands the file to your default PDF app, which may "fit to page".
+Install SumatraPDF (`winget install SumatraPDF.SumatraPDF`, free) and print again. The tool uses
+it automatically.
+
+### Some passports didn't print
+The page shows which ones failed (open **Show details**). Fix the printer (paper, jam, offline),
+then print just those Cubs: `uv run python print_passports.py --cub "First Last"`.
+
+### Which file do I print by hand?
 `print 4-up/ALL CUBS - print 4-up.pdf`, **single-sided**, on letter paper, at **"Actual size" / 100%**
 (not "Fit to page"). Each sheet has 4 passport pages, and under every page is the Cub's
 name and page number.

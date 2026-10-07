@@ -61,14 +61,24 @@ Click **Close** at the bottom of the page when you're finished.
 
 ## Print
 
-Open the `print 4-up` folder and print **`ALL CUBS - print 4-up.pdf`** (single-sided, letter,
-"actual size"). Each sheet has 4 passport pages; the Cub's name and page number are under every page.
+On the page, under **Print**:
 
-For each Cub's sheets (the name is at the bottom of each sheet):
+1. Pick your printer (your default printer is already selected).
+2. Click **Print a test sheet** first. One sheet comes out, so you can check the text is readable
+   and the dashed lines are in the middle.
+3. Click **Print all passports**. Each Cub prints as its own job (single-sided, letter, actual
+   size), so their stacks stay separate. Under every page are the Cub's name and the page number.
+
+Then for each Cub's stack:
 
 1. Cut the whole stack along the dashed lines.
 2. Stack the four piles: **top-left** on top, then **top-right**, then **bottom-left**, then **bottom-right**.
-3. The pages are now in order — staple or bind.
+3. The pages are now in order. Staple or bind them.
+
+> Windows: install the free **SumatraPDF** (`winget install SumatraPDF.SumatraPDF`) so pages print
+> at exact size. Without it, Windows' default PDF app prints them and may shrink them slightly.
+> To print by hand instead, open `print 4-up/ALL CUBS - print 4-up.pdf` and print it single-sided at
+> "Actual size".
 
 ## Read the audit
 
@@ -122,6 +132,7 @@ Optional files in `ScoutsPassportData`:
 |---|---|
 | `uv run python passport.py ui` | the point-and-click page (`ui.py`, local only, secret-key URL) |
 | `uv run python passport.py run [--stages 1-4] [--no-fetch]` | fetch → build → fill → audit |
+| `uv run python print_passports.py [--list] [--dry-run] [--test-sheet] [--cub NAME] [--printer P]` | print the 4-up files, one job per Cub |
 | `uv run --group dev pytest` | tests (synthetic Cubs, no real data); CI runs them on Mac/Windows/Linux |
 | `uv run python passport.py login` | sign into ScoutsTracker (saved profile) |
 | `uv run python doctor.py [--online] [--json]` | setup checks |

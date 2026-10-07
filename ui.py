@@ -92,6 +92,7 @@ def status() -> dict:
                     counts[row["level"]] = counts.get(row["level"], 0) + 1
         log = json.loads((out / "fill_log.json").read_text(encoding="utf-8")).get("cubs", {})
         result = {"date": out.name, "cubs": len(log), "counts": counts,
+                  "sheets": sum(v.get("print_sheets", 0) for v in log.values()),
                   "has_audit": (out / "audit.html").exists(),
                   "has_print": (out / "print 4-up" / "ALL CUBS - print 4-up.pdf").exists()}
     profile = WORKSPACE / "browser-profile"
@@ -139,6 +140,12 @@ def make_handler(token: str, job: Job, stop):
             if url.path == "/api/job":
                 since = int(parse_qs(url.query).get("since", ["0"])[0] or 0)
                 return self._send(200, job.snapshot(since))
+            if url.path == "/api/printers":
+                import print_passports
+                names, default = print_passports.list_printers()
+                return self._send(200, {"printers": names, "default": default,
+                                        "windows_no_sumatra": print_passports.IS_WIN
+                                        and not print_passports.find_sumatra()})
             if url.path == "/api/doctor":
                 r = subprocess.run([sys.executable, "doctor.py", "--json"], cwd=HERE,
                                    capture_output=True, text=True, encoding="utf-8")
@@ -165,6 +172,18 @@ def make_handler(token: str, job: Job, stop):
                 if not body.get("fetch", True):
                     args.append("--no-fetch")
                 ok = job.start("Making passports", args)
+            elif path == "/api/print":
+                import print_passports
+                names, _ = print_passports.list_printers()
+                printer = body.get("printer")
+                if printer not in names:
+                    return self._send(400, {"error": "Choose a printer first."})
+                if not latest_out():
+                    return self._send(404, {"error": "not made yet"})
+                args = ["print_passports.py", "--printer", printer, "--yes"]
+                if body.get("test"):
+                    args.append("--test-sheet")
+                ok = job.start("Printing", args)
             elif path == "/api/login":
                 ok = job.start("Signing in", ["passport.py", "login"])
             elif path == "/api/check":
@@ -284,8 +303,15 @@ a{color:var(--green)}footer{color:var(--muted);font-size:14px;text-align:center}
     <button data-open="audit">Open check report</button>
     <button data-open="folder">Open passports folder</button>
   </div>
-  <p class="fix" style="margin:12px 0 0">Print single-sided, actual size. Cut each Cub's stack on the dashed lines,
-  then stack the piles top-left, top-right, bottom-left, bottom-right.</p>
+  <h2 style="margin-top:20px">Print</h2>
+  <div class="row">
+    <label>Printer <select id="printer"><option>Loading…</option></select></label>
+    <button id="testprint">Print a test sheet</button>
+    <button id="printall" class="primary" style="font-size:16px;padding:9px 16px">Print all passports</button>
+  </div>
+  <p class="fix" id="printnote" style="margin:10px 0 0">Each Cub prints as its own job, single-sided, actual size.
+  Try a test sheet first. Then cut each Cub's stack on the dashed lines and stack the piles
+  top-left, top-right, bottom-left, bottom-right.</p>
 </section>
 
 <section class="card">
@@ -325,7 +351,7 @@ async function refresh(){
     `<span><span class="dot ${!s.result?"warn":s.result.counts.ERROR?"err":"ok"}"></span>Passports</span><span>${s.result?`${s.result.cubs} made on ${s.result.date}`:"None yet"}</span>`;
   if(s.result){
     $("results").hidden=false;$("rdate").textContent="("+s.result.date+")";
-    const c=s.result.counts;
+    const c=s.result.counts; sheetsTotal=s.result.sheets||0;
     $("counts").innerHTML=`<span class="pill e">${c.ERROR} errors</span><span class="pill w">${c.WARN} to check in ScoutsTracker</span><span class="pill i">${c.INFO} notes</span>`;
   }
 }
@@ -354,12 +380,29 @@ function done(j){
     else if(/PIN|not logged in|Not logged into/i.test(log)) msg("ScoutsTracker needs you to sign in again (your PIN expires every so often). Click <b>Sign into ScoutsTracker</b>, then <b>Make passports</b> again.","note");
     else if(/ERROR/.test(log)) msg("Passports were made, but some have errors. Open the <b>check report</b> before printing.","bad");
     else {msg("Something went wrong. Open <b>Show details</b> below, and see the troubleshooting guide.","bad");$("logbox").open=true}
+  } else if(j.name==="Printing"){
+    if(j.exit_code===0) msg(/test sheet/.test(log)?"Test sheet sent. Check the text is readable and the dashed lines are centred.":"All passports sent to the printer. Cut and stack each Cub's pages as described above.","good");
+    else {msg("Some passports didn't print. Open <b>Show details</b> below.","bad");$("logbox").open=true}
   } else if(j.name==="Signing in"){
     msg(j.exit_code===0?"Signed in. You can make passports now.":"Sign-in didn't finish. Try again; the window waits 10 minutes.",j.exit_code===0?"good":"note");
   } else if(j.name==="Checking setup"){ loadChecks(); msg(j.exit_code===0?"Setup looks good.":"Some setup checks failed. See the list under <b>Sign in &amp; setup</b>.",j.exit_code===0?"good":"bad") }
 }
 
-function busy(b){for(const id of ["go","login","check"])$(id).disabled=b}
+function busy(b){for(const id of ["go","login","check","printall","testprint"])$(id).disabled=b}
+
+let sheetsTotal=0;
+async function loadPrinters(){
+  const {ok,j}=await api("/api/printers");
+  const sel=$("printer");
+  if(!ok||!j.printers.length){sel.innerHTML="<option value=''>No printers found</option>";return}
+  sel.innerHTML=j.printers.map(p=>`<option ${p===j.default?"selected":""}>${esc(p)}</option>`).join("");
+  if(j.windows_no_sumatra)$("printnote").innerHTML+="<br><b>Tip:</b> install SumatraPDF (free) so pages print at exact size: <code>winget install SumatraPDF.SumatraPDF</code>";
+}
+function doPrint(test){
+  const p=$("printer").value; if(!p){msg("Choose a printer first.","note");return}
+  if(!test && !confirm(`Print every Cub's passport on ${p}? This uses about ${sheetsTotal||"several hundred"} sheets of paper.`))return;
+  start("/api/print",{printer:p,test});
+}
 
 async function start(path,body){
   $("log").textContent="";since=0;$("msg").className="msg";
@@ -378,6 +421,8 @@ async function loadChecks(){
 
 $("go").onclick=()=>start("/api/run",{stage:+$("stage").value,fetch:$("fetch").checked});
 $("login").onclick=()=>start("/api/login");
+$("printall").onclick=()=>doPrint(false);
+$("testprint").onclick=()=>doPrint(true);
 $("check").onclick=()=>start("/api/check");
 document.querySelectorAll("[data-open]").forEach(b=>b.onclick=async()=>{
   const {ok}=await api("/api/open",{method:"POST",body:JSON.stringify({what:b.dataset.open})});
@@ -386,7 +431,7 @@ document.querySelectorAll("[data-open]").forEach(b=>b.onclick=async()=>{
 $("quit").onclick=async e=>{e.preventDefault();await api("/api/quit",{method:"POST"});
   document.body.innerHTML="<main><h1>Closed</h1><p class='sub'>You can close this tab.</p></main>"};
 
-refresh();loadChecks();poll();
+refresh();loadChecks();loadPrinters();poll();
 </script></body></html>"""
 
 

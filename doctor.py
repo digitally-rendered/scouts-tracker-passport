@@ -147,6 +147,19 @@ def run_checks(online: bool) -> None:
     else:
         check("Latest ScoutsTracker data", None, "none yet", f"Run {RUN}.")
 
+    try:
+        import print_passports
+        printers, default = print_passports.list_printers()
+        check("Printer", True if printers else None,
+              f"{len(printers)} found, default: {default or 'none'}" if printers else "none found",
+              "Optional: add a printer in your computer's settings to print from the tool.")
+        if IS_WIN and printers:
+            check("Exact-size printing (SumatraPDF)", True if print_passports.find_sumatra() else None,
+                  "installed" if print_passports.find_sumatra() else "not installed",
+                  "Optional: winget install SumatraPDF.SumatraPDF  (otherwise pages may print shrunk)")
+    except Exception as e:  # noqa: BLE001
+        check("Printer", None, str(e)[:200], "Optional.")
+
     out_dirs = sorted(p for p in OUT_DIR.glob("20*-*-*") if p.is_dir())
     if out_dirs:
         locked = []
