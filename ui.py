@@ -363,9 +363,14 @@ a{color:var(--green)}footer{color:var(--muted);font-size:14px;text-align:center}
     <label>Printer <select id="printer"><option>Loading…</option></select></label>
   </div>
   <p class="fix" id="printnote" style="margin:10px 0 0"></p>
-  <div id="autoprint" class="row" style="margin-top:10px">
-    <button id="testprint">Print a test sheet</button>
-    <button id="printall" class="primary" style="font-size:16px;padding:9px 16px">Print all passports</button>
+  <div id="autoprint" style="margin-top:10px">
+    <div class="row">
+      <button id="testprint">Print a test sheet</button>
+      <label>Cub <select id="acub"></select></label>
+      <button id="printall" class="primary" style="font-size:16px;padding:9px 16px">Print this Cub</button>
+    </div>
+    <p class="fix" style="margin:8px 0 0">Pick a Cub and print just their passport; the next Cub is then selected.
+    Or choose <b>All Cubs</b>: each Cub prints as its own job, one after another.</p>
   </div>
   <div id="manualprint" hidden style="margin-top:10px">
     <p class="fix" style="margin:0 0 8px">Your printer prints one side, so each booklet is printed in two passes,
@@ -470,6 +475,7 @@ function done(j){
       if(lastPrint.test) msg("Test back sent. Fold the sheet: the cover and back cover should be outside and the right way up. Backs in the wrong order? Tick <b>Reverse backs</b>. Upside down? Tick <b>Turn backs upside down</b>. Then repeat the test.","good");
       else { msg(`<b>${esc(lastPrint.cub)} done.</b> Fold the stack in half and staple on the fold. The next Cub is selected; click <b>1. Print fronts</b>.`,"good"); nextCub(); }
     }
+    else if(lastPrint.cub && !lastPrint.test){ msg(`<b>${esc(lastPrint.cub)} printed.</b> Cut and stack their sheets. The next Cub is selected; click <b>Print this Cub</b> when ready.`,"good"); nextCub("acub"); }
     else msg(esc(after),"good");
   } else if(j.name==="Signing in"){
     msg(j.exit_code===0?"Signed in. You can make passports now.":"Sign-in didn't finish. Try again; the window waits 10 minutes.",j.exit_code===0?"good":"note");
@@ -492,8 +498,10 @@ async function loadPrinters(){
 async function loadCubs(){
   const {j}=await api("/api/cubs"); cubCount=j.cubs.length;
   $("mcub").innerHTML=j.cubs.map(c=>`<option>${esc(c)}</option>`).join("");
+  $("acub").innerHTML=j.cubs.map(c=>`<option>${esc(c)}</option>`).join("")+`<option value="">All Cubs (one after another)</option>`;
 }
-function nextCub(){const s=$("mcub");if(s.selectedIndex<s.options.length-1)s.selectedIndex++}
+function nextCub(id="mcub"){const s=$(id);if(s.selectedIndex<s.options.length-(id==="acub"?2:1))s.selectedIndex++;printLabel()}
+function printLabel(){$("printall").textContent=$("acub").value?"Print this Cub":"Print all Cubs"}
 function printUI(){
   const layout=$("layout").value,p=$("printer").value,duplex=!!printers.duplex[p];
   const manual=layout==="booklet"&&!duplex;
@@ -536,7 +544,12 @@ async function loadChecks(){
 
 $("go").onclick=()=>start("/api/run",{stage:+$("stage").value,fetch:$("fetch").checked});
 $("login").onclick=()=>start("/api/login");
-$("printall").onclick=()=>{ if(confirm(`Print every Cub's passport on ${$("printer").value}? About ${sheetsTotal} sheets of paper.`)) doPrint({test:false}) };
+$("printall").onclick=()=>{
+  const cub=$("acub").value;
+  if(cub) doPrint({test:false,cub});
+  else if(confirm(`Print every Cub's passport on ${$("printer").value}, one Cub at a time? About ${sheetsTotal} sheets of paper.`)) doPrint({test:false});
+};
+$("acub").onchange=printLabel;
 $("testprint").onclick=()=>doPrint({test:true});
 const flags=()=>({reverse:$("mrev").checked,rotate:$("mrot").checked});
 $("mtestf").onclick=()=>doPrint({test:true,pass:"fronts"});

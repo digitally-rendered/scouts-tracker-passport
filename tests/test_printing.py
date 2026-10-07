@@ -90,7 +90,8 @@ def test_duplex_detection(monkeypatch, options, expected):
 
 def test_print_all_is_one_job_with_each_cub_together(out_dir):
     files = pp.layout_files(out_dir, "4up")
-    (title, pdf, sides), = pp.plan_jobs(files, "4up", False, None, False)[0]
+    assert len(pp.plan_jobs(files, "4up", False, None, False)[0]) == 3    # default: one job per Cub
+    (title, pdf, sides), = pp.plan_jobs(files, "4up", False, None, False, one_job=True)[0]
     assert title == "Passports - 3 Cubs" and sides == "one"
     assert pp.pages(pdf) == sum(pp.pages(f) for _, f in files)
     with pymupdf.open(pdf) as d:
@@ -102,7 +103,7 @@ def test_booklet_on_duplex_printer_is_short_edge(out_dir):
     files = pp.layout_files(out_dir, "booklet")
     jobs, after = pp.plan_jobs(files, "booklet", True, None, False, one_job=False)
     assert len(jobs) == 3 and all(sides == "short" for _, _, sides in jobs)
-    (_, _, sides), = pp.plan_jobs(files, "booklet", True, None, False)[0]
+    (_, _, sides), = pp.plan_jobs(files, "booklet", True, None, False, one_job=True)[0]
     assert sides == "short" and "fold" in after.lower()
 
 

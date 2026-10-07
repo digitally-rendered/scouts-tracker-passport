@@ -21,10 +21,10 @@ Other options:
     --printer NAME       default: the system default printer
     --yes                don't ask before printing
 
-Everything is sent as ONE print job (each Cub's sheets together, in name order),
-because some network printers interleave pages from jobs sent at the same time.
-With --separate-jobs, each job is sent only after the previous one has finished
-printing (and its sheet count is checked); if one fails, nothing after it is sent.
+Each Cub is its own print job, sent only after the previous one has finished
+printing (and its sheet count is checked), because some network printers
+interleave pages from jobs sent at the same time. If one fails, nothing after it
+is sent. --one-job sends every Cub in a single job instead.
 
 macOS/Linux print with lp. Windows uses SumatraPDF if installed (exact size,
 double-sided control) and otherwise the default PDF app.
@@ -321,7 +321,7 @@ def combine(files: list[tuple[str, Path]]) -> Path:
 
 def plan_jobs(files, layout: str, duplex: bool, which: str | None, test: bool,
               reverse: bool = False, rotate: bool = False,
-              one_job: bool = True) -> tuple[list, str]:
+              one_job: bool = False) -> tuple[list, str]:
     """Work out the print jobs. Returns (jobs, what to do afterwards)."""
     edge = LAYOUTS[layout][2]
     if test:
@@ -375,8 +375,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="show what would print, use no paper")
     ap.add_argument("--yes", action="store_true", help="don't ask for confirmation")
     ap.add_argument("--test-sheet", action="store_true", help="just the first sheet of one Cub")
-    ap.add_argument("--separate-jobs", action="store_true",
-                    help="one print job per Cub instead of one job for everyone")
+    ap.add_argument("--one-job", action="store_true",
+                    help="send every Cub in a single print job instead of one job per Cub")
     ap.add_argument("--no-wait", action="store_true",
                     help="send every job at once instead of one after another (not recommended)")
     a = ap.parse_args()
@@ -404,7 +404,7 @@ def main() -> int:
     out_dir = Path(a.dir) if a.dir else latest_out_dir()
     files = layout_files(out_dir, a.layout, a.cub)
     jobs, after = plan_jobs(files, a.layout, duplex, a.which, a.test_sheet,
-                            a.reverse_backs, a.rotate_backs, one_job=not a.separate_jobs)
+                            a.reverse_backs, a.rotate_backs, one_job=a.one_job)
     total = sum(pages(p) for _, p, _ in jobs)
     two = any(s != "one" for _, _, s in jobs)
     sheets = (total + 1) // 2 if two else total
