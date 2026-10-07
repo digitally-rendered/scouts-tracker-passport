@@ -1,0 +1,16 @@
+# Private data never lives in this folder (see paths.py -> ~/ScoutsPassportData).
+# Belt and braces in case someone points PASSPORT_DATA here or copies files in:
+data/
+out/
+browser-profile/
+.browser-profile/
+.playwright-mcp/
+*.csv
+scouter_names.json
+.env
+.venv/
+__pycache__/
+.DS_Store
+dist/
+.claude/settings.local.json
+.remember/
