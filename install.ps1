@@ -2,6 +2,9 @@
 #
 #   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/digitally-rendered/scouts-tracker-passport/main/install.ps1 | iex"
 #
+# Options (env vars): PASSPORT_HOME (install folder), PASSPORT_ZIP_URL (source zip),
+# PASSPORT_NO_SHORTCUTS=1 (no Desktop shortcuts), PASSPORT_NONINTERACTIVE=1 (no prompts).
+#
 # Downloads the tool into %USERPROFILE%\ScoutsPassport, installs uv + Python +
 # libraries + a private browser, and puts shortcuts on the Desktop. Re-run to
 # update; your private data (%USERPROFILE%\ScoutsPassportData) is never touched.
@@ -18,7 +21,7 @@ function Die($m) {
     Write-Host "`nInstall failed: $m" -ForegroundColor Red
     Write-Host 'Help: https://github.com/digitally-rendered/scouts-tracker-passport/blob/main/docs/TROUBLESHOOTING.md'
     Write-Host 'Or email Drew Carmichael: drew.carmichael@gmail.com'
-    Read-Host 'Press Enter to close'; exit 1
+    if (-not $env:PASSPORT_NONINTERACTIVE) { Read-Host 'Press Enter to close' }; exit 1
 }
 
 
@@ -55,6 +58,7 @@ try {
     Say 'Installing the browser used to read ScoutsTracker'
     uv run playwright install chromium; if ($LASTEXITCODE) { Die 'browser install failed' }
 
+    if (-not $env:PASSPORT_NO_SHORTCUTS) {
     Say 'Adding shortcuts to your Desktop'
     $shell = New-Object -ComObject WScript.Shell
     $desk = [Environment]::GetFolderPath('Desktop')
@@ -66,12 +70,13 @@ try {
         $lnk.WorkingDirectory = $Dir
         $lnk.Save()
     }
+    }
 
     Say 'Checking the setup'
     uv run python doctor.py
-
     $data = if ($env:PASSPORT_DATA) { $env:PASSPORT_DATA } else { Join-Path $env:USERPROFILE 'ScoutsPassportData' }
-    if (-not (Test-Path (Join-Path $data 'browser-profile'))) {
+
+    if (-not $env:PASSPORT_NONINTERACTIVE -and -not (Test-Path (Join-Path $data 'browser-profile'))) {
         $ans = Read-Host "`nSign into ScoutsTracker now? [Y/n]"
         if ($ans -notmatch '^[Nn]') { uv run python passport.py login }
     }
