@@ -1,5 +1,6 @@
 """print_passports.py + print_layout.py: never sends anything to a real printer."""
 import subprocess
+from pathlib import Path
 
 import pymupdf
 import pytest
@@ -189,7 +190,7 @@ def test_waits_for_each_job_before_sending_the_next(out_dir, monkeypatch):
     monkeypatch.setattr(pp, "pages", lambda pdf: 16)
     files = pp.layout_files(out_dir, "4up")
     jobs = [(f"Passport - {n}", f, "one") for n, f in files]
-    assert pp.send(jobs, "P", log=lambda m: None, wait=True) == 0
+    assert pp.send(jobs, "P", log=lambda m: None, wait=True, per_sheet=False) == 0
     sent_at = [i for i, e in enumerate(events) if e[0] == "sent"]
     # every job's last poll (completed) happens before the next job is sent
     for a, b in zip(sent_at, sent_at[1:]):
@@ -206,7 +207,7 @@ def test_stops_when_a_job_prints_short(out_dir, monkeypatch):
     monkeypatch.setattr(pp, "pages", lambda pdf: 16)
     lines = []
     files = pp.layout_files(out_dir, "4up")
-    assert pp.send([(n, f, "one") for n, f in files], "P", log=lines.append) == 1
+    assert pp.send([(n, f, "one") for n, f in files], "P", log=lines.append, per_sheet=False) == 1
     assert len(sent) == 1                                   # nothing after the bad job
     assert any("10 of 16" in l for l in lines) and any(l.startswith("STOPPED") for l in lines)
 
@@ -218,3 +219,51 @@ def test_double_sided_expects_half_the_sides_as_sheets(monkeypatch):
     monkeypatch.setattr(pp, "job_status", lambda p, j: ("aborted", 2))
     assert not pp.wait_for_job("P", 1, 16, log=lambda m: seen.setdefault("m", m))
     assert "aborted" in seen["m"]
+
+
+
+# ------------------------------------------------- one sheet per job --
+
+def test_each_sheet_is_its_own_job_in_order(out_dir, monkeypatch):
+    import json
+    monkeypatch.setattr(pp, "IS_WIN", False)
+    sent, finished = [], []
+
+    def fake_run(cmd, **k):
+        assert len(finished) == len(sent), "next sheet sent before the last one finished"
+        sent.append((cmd[4], pp.pages(Path(cmd[-1]))))
+        return subprocess.CompletedProcess(cmd, 0, f"request id is P-{len(sent)} (1 file(s))", "")
+
+    def fake_status(p, j):
+        finished.append(j)
+        return ("completed", 1)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(pp, "job_status", fake_status)
+    files = pp.layout_files(out_dir, "4up", ["Alex Tester", "Blair Example"])
+    lines = []
+    assert pp.send([(f"Passport - {n}", f, "one") for n, f in files], "P", log=lines.append) == 0
+    per_cub = pp.pages(files[0][1])
+    assert len(sent) == 2 * per_cub and all(n == 1 for _, n in sent)       # 1 page each
+    assert [t for t, _ in sent[:per_cub]] == [f"Passport - Alex Tester ({k}/{per_cub})"
+                                              for k in range(1, per_cub + 1)]
+    done = [json.loads(l[4:]) for l in lines if l.startswith("JOB ") and '"done"' in l]
+    assert [d["title"] for d in done] == ["Passport - Alex Tester", "Passport - Blair Example"]
+
+
+def test_per_sheet_stops_at_first_failed_sheet(out_dir, monkeypatch):
+    monkeypatch.setattr(pp, "IS_WIN", False)
+    sent = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: sent.append(cmd) or
+                        subprocess.CompletedProcess(cmd, 0, f"request id is P-{len(sent)} (1 file(s))", ""))
+    monkeypatch.setattr(pp, "job_status", lambda p, j: ("aborted", 0) if j == 3 else ("completed", 1))
+    files = pp.layout_files(out_dir, "4up")
+    lines = []
+    assert pp.send([(n, f, "one") for n, f in files], "P", log=lines.append) == 1
+    assert len(sent) == 3                                   # sheets 1, 2, then 3 failed - stop
+    assert sum('"not sent"' in l for l in lines) == 2       # the other two Cubs
+
+
+def test_split_sheets_double_sided_keeps_front_and_back_together(out_dir):
+    _, f = pp.layout_files(out_dir, "booklet", ["Alex Tester"])[0]
+    parts = pp.split_sheets(f, "short")
+    assert len(parts) == (pp.pages(f) + 1) // 2 and all(pp.pages(p) == 2 for p in parts)

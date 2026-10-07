@@ -21,10 +21,11 @@ Other options:
     --printer NAME       default: the system default printer
     --yes                don't ask before printing
 
-Each Cub is its own print job, sent only after the previous one has finished
-printing (and its sheet count is checked), because some network printers
-interleave pages from jobs sent at the same time. If one fails, nothing after it
-is sent. --one-job sends every Cub in a single job instead.
+Every sheet of paper is sent as its own small print job, in order, and the next
+one is sent only when the printer has finished the last. Printers with little
+memory (e.g. the Brother MFC-9130CW over AirPrint) otherwise fill up on a
+multi-page colour job and print only the first page. If a sheet fails, nothing
+after it is sent. --whole-jobs sends one job per Cub instead (faster).
 
 macOS/Linux print with lp. Windows uses SumatraPDF if installed (exact size,
 double-sided control) and otherwise the default PDF app.
@@ -272,48 +273,98 @@ def wait_for_job(printer: str, job_id: int, expected: int, log=print, sleep=None
     return False
 
 
+def split_sheets(pdf: Path, sides: str) -> list[Path]:
+    """One small PDF per sheet of paper (1 side, or front+back when double-sided)."""
+    per = 1 if sides == "one" else 2
+    folder = _tmp("sheets").parent
+    out = []
+    with pymupdf.open(pdf) as d:
+        for k, start in enumerate(range(0, len(d), per)):
+            part = folder / f"sheet-{k + 1:03d}.pdf"
+            with pymupdf.open() as one:
+                one.insert_pdf(d, from_page=start, to_page=min(start + per, len(d)) - 1)
+                one.save(part, garbage=3, deflate=True)
+            out.append(part)
+    return out
+
+
 def send(jobs: list[tuple[str, Path, str]], printer: str, dry_run: bool = False, log=print,
-         wait: bool = True) -> int:
-    """Print (title, pdf, sides) jobs one at a time. Returns how many failed."""
+         wait: bool = True, per_sheet: bool | None = None) -> int:
+    """Print (title, pdf, sides) jobs in order. Returns how many failed.
+
+    per_sheet (default on, except Windows): send every sheet of paper as its own
+    small job and wait for it to finish before the next. Printers with little
+    memory (e.g. Brother MFC-9130CW over AirPrint) otherwise run out of memory on
+    a multi-page colour job and print only the first page."""
     import re
+    if per_sheet is None:
+        per_sheet = wait and not IS_WIN
     failed = 0
     if not dry_run:
         for i, (title, pdf, sides) in enumerate(jobs):
             log(report(i=i, title=title, state="waiting", expected=_sheets(pdf, sides)))
+
+    def submit(path: Path, title: str, sides: str) -> tuple[bool, int | None, str]:
+        r = subprocess.run(print_command(path, printer, title, sides), capture_output=True, text=True)
+        if r.returncode != 0:
+            return False, None, (r.stderr or r.stdout).strip()[:300]
+        m = re.search(r"request id is \S+-(\d+)", r.stdout)
+        return True, (int(m.group(1)) if m else None), ""
+
     for i, (title, pdf, sides) in enumerate(jobs):
         n = pages(pdf)
-        desc = f"{title}: {n} side{'s' if n != 1 else ''}" + (
+        expected = _sheets(pdf, sides)
+        desc = f"{title}: {expected} sheet{'s' if expected != 1 else ''}" + (
             "" if sides == "one" else f", double-sided ({sides} edge)")
         if dry_run:
             log(f"[dry run] {desc} -> {printer}")
             continue
-        expected = _sheets(pdf, sides)
-        r = subprocess.run(print_command(pdf, printer, title, sides), capture_output=True, text=True)
-        if r.returncode != 0:
-            failed += 1
-            log(report(i=i, title=title, state="failed", expected=expected))
-            log(f"FAILED {title}: {(r.stderr or r.stdout).strip()[:300]}")
-            continue
-        m = re.search(r"request id is \S+-(\d+)", r.stdout)
-        job_id = int(m.group(1)) if m else None
-        if not (wait and job_id and not IS_WIN):
-            log(report(i=i, title=title, state="sent", job=job_id, expected=expected))
-            log(f"Sent {desc} to {printer}")
-            continue
-        log(f"Printing {desc} (job {job_id})...")
-        log(report(i=i, title=title, state="sent", job=job_id, sheets=0, expected=expected))
 
-        def progress(state, sheets, i=i, title=title, job_id=job_id, expected=expected):
-            log(report(i=i, title=title, state=state, job=job_id, sheets=sheets or 0,
-                       expected=expected))
-        if wait_for_job(printer, job_id, expected, log, progress=progress):
-            log(report(i=i, title=title, state="done", job=job_id, sheets=expected, expected=expected))
+        if not per_sheet:
+            ok, job_id, err = submit(pdf, title, sides)
+            if not ok:
+                failed += 1
+                log(report(i=i, title=title, state="failed", expected=expected))
+                log(f"FAILED {title}: {err}")
+                continue
+            if not (wait and job_id and not IS_WIN):
+                log(report(i=i, title=title, state="sent", job=job_id, expected=expected))
+                log(f"Sent {desc} to {printer}")
+                continue
+            log(f"Printing {desc} (job {job_id})...")
+
+            def progress(state, sheets, i=i, title=title, job_id=job_id, expected=expected):
+                log(report(i=i, title=title, state=state, job=job_id, sheets=sheets or 0,
+                           expected=expected))
+            ok = wait_for_job(printer, job_id, expected, log, progress=progress)
+        else:
+            log(f"Printing {desc}, one sheet at a time...")
+            ok = True
+            for k, part in enumerate(split_sheets(pdf, sides), start=1):
+                sent, job_id, err = submit(part, f"{title} ({k}/{expected})", sides)
+                if not sent:
+                    log(f"  sheet {k}: {err}")
+                    ok = False
+                    break
+                log(report(i=i, title=title, state="processing", job=job_id, sheets=k - 1,
+                           expected=expected))
+                if job_id and not wait_for_job(printer, job_id, 1, log):
+                    log(f"  sheet {k} of {expected} didn't finish")
+                    ok = False
+                    break
+                log(report(i=i, title=title, state="processing", job=job_id, sheets=k,
+                           expected=expected))
+            job_id = None
+
+        if ok:
+            log(report(i=i, title=title, state="done", sheets=expected, expected=expected))
             log(f"  done: {title}")
         else:
             failed += 1
-            log(report(i=i, title=title, state="failed", job=job_id, expected=expected))
+            log(report(i=i, title=title, state="failed", expected=expected))
             for k in range(i + 1, len(jobs)):
-                log(report(i=k, title=jobs[k][0], state="not sent", expected=_sheets(jobs[k][1], jobs[k][2])))
+                log(report(i=k, title=jobs[k][0], state="not sent",
+                           expected=_sheets(jobs[k][1], jobs[k][2])))
             log(f"STOPPED: {title} didn't finish. Nothing else was sent. Check the printer, "
                 f"then print the rest with --cub.")
             break
@@ -327,7 +378,8 @@ def _sheets(pdf: Path, sides: str) -> int:
 
 def print_all(files, printer: str, dry_run: bool = False, log=print) -> int:
     """Print 4-up files, one single-sided job per Cub."""
-    return send([(f"Passport - {n}", f, "one") for n, f in files], printer, dry_run, log)
+    return send([(f"Passport - {n}", f, "one") for n, f in files], printer, dry_run, log,
+                per_sheet=False)
 
 
 AFTER = {
@@ -407,6 +459,9 @@ def main() -> int:
     ap.add_argument("--test-sheet", action="store_true", help="just the first sheet of one Cub")
     ap.add_argument("--one-job", action="store_true",
                     help="send every Cub in a single print job instead of one job per Cub")
+    ap.add_argument("--whole-jobs", action="store_true",
+                    help="send each Cub as one multi-page job instead of one sheet at a time "
+                         "(faster, but low-memory printers may print only the first page)")
     ap.add_argument("--no-wait", action="store_true",
                     help="send every job at once instead of one after another (not recommended)")
     a = ap.parse_args()
@@ -447,7 +502,8 @@ def main() -> int:
         if input(f"Print {sheets} sheet(s) now? [y/N] ").strip().lower() not in ("y", "yes"):
             print("Nothing printed.")
             return 0
-    failed = send(jobs, printer, a.dry_run, wait=not a.no_wait)
+    failed = send(jobs, printer, a.dry_run, wait=not a.no_wait,
+                  per_sheet=False if (a.whole_jobs or a.no_wait) else None)
     if not a.dry_run:
         print("\n" + (after if not failed else
                       f"{failed} job(s) failed - check the printer, then reprint those Cubs with --cub."))
