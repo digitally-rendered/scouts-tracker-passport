@@ -3,6 +3,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/digitally-rendered/scouts-tracker-passport/main/install.sh | sh
 #
+# Options (env vars): PASSPORT_HOME (install folder), PASSPORT_ZIP_URL (source zip),
+# PASSPORT_NO_SHORTCUTS=1 (no Desktop launchers), PASSPORT_NONINTERACTIVE=1 (no prompts).
+#
 # Downloads the tool into ~/ScoutsPassport, installs uv + Python + libraries +
 # a private browser, and puts launchers on the Desktop. Re-run to update; your
 # private data (~/ScoutsPassportData) is never touched.
@@ -65,7 +68,7 @@ say "Checking the setup"
 uv run python doctor.py || true
 
 # stdin is the curl pipe, so ask on the terminal directly.
-if [ -r /dev/tty ] && [ ! -d "${PASSPORT_DATA:-$HOME/ScoutsPassportData}/browser-profile" ]; then
+if [ -z "${PASSPORT_NONINTERACTIVE:-}" ] && [ -r /dev/tty ] && [ ! -d "${PASSPORT_DATA:-$HOME/ScoutsPassportData}/browser-profile" ]; then
   printf '\nSign into ScoutsTracker now? [Y/n] '
   read -r ans < /dev/tty || ans=n
   case "$ans" in [Nn]*) ;; *) uv run python passport.py login < /dev/tty ;; esac

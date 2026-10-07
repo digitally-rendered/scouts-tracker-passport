@@ -1,0 +1,76 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --group dev
+      - run: uv run --group dev pytest -v
+        env:
+          PYTHONUTF8: "1"
+
+  installer:
+    # Runs the real one-line installers on fresh machines, from a zip of this
+    # commit served locally, then makes passports for the invented test Cubs.
+    name: installer (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PASSPORT_NONINTERACTIVE: "1"
+      PASSPORT_NO_SHORTCUTS: "1"
+      PASSPORT_ZIP_URL: http://127.0.0.1:8765/tool.zip
+      PASSPORT_HOME: ${{ github.workspace }}/../installed
+      PASSPORT_DATA: ${{ github.workspace }}/../private-data
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package this commit like GitHub's download zip
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/serve"
+          git archive --format zip --prefix scouts-tracker-passport-main/ -o "$RUNNER_TEMP/serve/tool.zip" HEAD
+
+      - name: Run install.sh (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python3 -m http.server 8765 --directory "$RUNNER_TEMP/serve" >/dev/null 2>&1 &
+          sleep 2
+          sh install.sh
+
+      - name: Run install.ps1 (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Start-Process python -ArgumentList '-m','http.server','8765','--directory',"$env:RUNNER_TEMP\serve" -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          powershell -NoProfile -ExecutionPolicy ByPass -File install.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Doctor on the installed copy
+        shell: bash
+        working-directory: ${{ env.PASSPORT_HOME }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run python doctor.py --json | tee doctor.json
+          uv run python -c "import json,sys; r={x['check']:x['status'] for x in json.load(open('doctor.json'))}; bad=[k for k in ('Python','PDF library (PyMuPDF)','Browser for ScoutsTracker','Passport template','Private data folder') if r.get(k)!='ok']; sys.exit(f'failed: {bad}') if bad else print('doctor ok')"
+
+      - name: Make passports with the installed copy (synthetic Cubs)
+        shell: bash
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          cd "$PASSPORT_HOME" && uv run python "$GITHUB_WORKSPACE/tests/ci/pipeline_smoke.py" "$PASSPORT_HOME"
