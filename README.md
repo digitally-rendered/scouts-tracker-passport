@@ -25,7 +25,7 @@ You don't need anything installed first. The install line:
 - installs **uv**, which installs and manages Python for this tool only
 - installs Python 3.12 and the libraries (PyMuPDF for PDFs, Playwright to read ScoutsTracker)
 - downloads a private copy of the Chromium browser, used only to read ScoutsTracker
-- puts three shortcuts on your Desktop: **Scouts Passports**, **Sign in** and **Check setup**
+- puts two shortcuts on your Desktop: **Scouts Passports** (opens the page) and **Check setup**
 
 It takes a few minutes and about 500 MB. Run the same line again any time to update; your data is kept.
 Optional: Microsoft Office provides the Aptos font used on the stage 4+ pages (see Troubleshooting).
@@ -38,16 +38,26 @@ sees or stores your password.
 > or `setup.bat` (Windows) instead. Mac may say the file is from an "unidentified developer":
 > right-click it → **Open**. Windows may show "Windows protected your PC": **More info → Run anyway**.
 
-ScoutsTracker asks for your **security PIN** again every so often. When a run says it needs your
-PIN or you're not logged in, double-click **Scouts Passports - Sign in**, enter it, and run again.
+ScoutsTracker asks for your **security PIN** again every so often. When the page says it needs
+you to sign in again, click **Sign into ScoutsTracker**, enter your PIN, then **Make passports** again.
 
 ## Make passports
 
-Double-click **Scouts Passports** on your Desktop (or `run.command` / `run.bat`).
+Double-click **Scouts Passports** on your Desktop. A page opens in your web browser.
 
-1. It asks the highest OAS stage to include — press Enter for **4**.
-2. It fetches the latest records from ScoutsTracker, makes every passport, and checks them.
-3. It opens the **audit report** and the folder with the passports.
+![The Scouts Passports page](docs/ui.png)
+
+1. **First time, or when it asks for your PIN:** click **Sign into ScoutsTracker**. Sign in
+   in the window that opens (email, password, PIN). It closes by itself when you're in.
+2. Pick the highest OAS stage to include (normally **4**) and click **Make passports**.
+   It gets the latest records from ScoutsTracker, makes every passport, and checks them.
+3. When it says **Done**, click **Open print file**. The page also shows how many passports
+   need attention; **Open check report** explains them.
+
+Keep the small terminal window that opens with the page; closing it closes the tool.
+Click **Close** at the bottom of the page when you're finished.
+
+> Prefer the terminal? `run.command` / `run.bat` does the same without the page.
 
 ## Print
 
@@ -110,7 +120,9 @@ Optional files in `ScoutsPassportData`:
 
 | Command | What it does |
 |---|---|
+| `uv run python passport.py ui` | the point-and-click page (`ui.py`, local only, secret-key URL) |
 | `uv run python passport.py run [--stages 1-4] [--no-fetch]` | fetch → build → fill → audit |
+| `uv run --group dev pytest` | tests (synthetic Cubs, no real data); CI runs them on Mac/Windows/Linux |
 | `uv run python passport.py login` | sign into ScoutsTracker (saved profile) |
 | `uv run python doctor.py [--online] [--json]` | setup checks |
 | `uv run python passport.py blank --stages 1-5` | blank extended passport (spares) |

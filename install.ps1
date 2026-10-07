@@ -62,8 +62,8 @@ try {
     Say 'Adding shortcuts to your Desktop'
     $shell = New-Object -ComObject WScript.Shell
     $desk = [Environment]::GetFolderPath('Desktop')
-    foreach ($s in @(@('Scouts Passports', 'run.bat'),
-                     @('Scouts Passports - Sign in', 'login.bat'),
+    Remove-Item (Join-Path $desk 'Scouts Passports - Sign in.lnk') -ErrorAction SilentlyContinue  # older installs
+    foreach ($s in @(@('Scouts Passports', 'app.bat'),
                      @('Scouts Passports - Check setup', 'doctor.bat'))) {
         $lnk = $shell.CreateShortcut((Join-Path $desk "$($s[0]).lnk"))
         $lnk.TargetPath = Join-Path $Dir $s[1]
@@ -82,5 +82,5 @@ try {
     }
 } finally { Pop-Location }
 
-Write-Host "`nDone! To make passports, double-click 'Scouts Passports' on your Desktop." -ForegroundColor Green
+Write-Host "`nDone! To make passports, double-click 'Scouts Passports' on your Desktop (it opens a page in your browser)." -ForegroundColor Green
 Write-Host "Your data stays private in $data"

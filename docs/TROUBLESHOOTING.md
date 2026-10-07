@@ -1,6 +1,7 @@
 # Troubleshooting
 
-**Start here:** double-click **Scouts Passports - Check setup** on your Desktop
+**Start here:** on the Scouts Passports page click **Check setup**, or double-click
+**Scouts Passports - Check setup** on your Desktop
 (or `doctor.command` / `doctor.bat` in the `ScoutsPassport` folder). It checks everything
 and tells you how to fix each problem. In Claude Code, `/passport-doctor` does the same and
 can run the fixes for you.
@@ -46,11 +47,11 @@ you have about 500 MB of free disk space.
 
 ### "ScoutsTracker is asking for your security PIN"
 ScoutsTracker asks for your **security PIN** again every so often. This is normal.
-Double-click **Scouts Passports - Sign in**, enter your PIN in the window that opens, click
-**Connect**, and wait for the window to close by itself. Then run the passports again.
+On the Scouts Passports page click **Sign into ScoutsTracker**, enter your PIN in the window that
+opens, click **Connect**, and wait for the window to close by itself. Then click **Make passports** again.
 
 ### "Not logged into ScoutsTracker"
-Your saved login has expired or was never created. Use **Scouts Passports - Sign in** and log in
+Your saved login has expired or was never created. Click **Sign into ScoutsTracker** on the page and log in
 the way you normally do (email, password, PIN). The tool never sees or stores your password;
 the browser window keeps the login in your private data folder.
 
@@ -69,6 +70,19 @@ won't appear.
 ---
 
 ## Making passports
+
+### The page doesn't open / "This site can't be reached"
+The page only works while its small terminal window is open. Double-click **Scouts Passports**
+again. If the browser didn't open by itself, copy the address shown in that terminal window into
+your browser. Bookmarks to the page don't work later, because the address changes each time
+(it includes a secret key).
+
+### "Open the page from the Scouts Passports shortcut"
+You opened an old or bookmarked address. Close the tab and double-click **Scouts Passports** again.
+
+### The page says "Something is already running"
+Wait for the current task to finish (the spinner shows what it's doing). The sign-in task waits
+up to 10 minutes for you to finish signing in.
 
 ### "PDF is open" / "Permission denied" when saving / "Passports not open elsewhere" fails
 Close the passports in Acrobat, Preview or your browser, then run again. Windows locks a PDF
@@ -103,7 +117,7 @@ from a computer that has Office into the `fonts` folder inside your private data
 Page 6 has 7 boxes. The audit lists the real total; write it in by hand if you like.
 
 ### The data is old ("stale data")
-Run **Scouts Passports** again. It fetches fresh data from ScoutsTracker every time.
+Click **Make passports** with **Get the latest from ScoutsTracker** ticked.
 
 ---
 
