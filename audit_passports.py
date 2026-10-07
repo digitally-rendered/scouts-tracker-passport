@@ -147,7 +147,8 @@ def audit(data_dir: Path, out_dir: Path) -> list[dict]:
         for u in log["unplaced"]:
             add("ERROR", cub, "tick not placed", u)
         for w in log.get("warnings", []):
-            add("WARN", cub, "template", w)
+            # Missing Aptos only changes the look of stage 4+ pages (Helvetica).
+            add("INFO" if "font" in w.lower() else "WARN", cub, "template", w)
         nights, boxes = log.get("camp_nights"), log.get("nights_boxes", 0)
         if nights and nights > boxes:
             add("INFO", cub, "camp nights", f"{nights} nights at camp; only {boxes} boxes on page 6")

@@ -21,7 +21,7 @@ import pymupdf as fitz
 SHEET_W, SHEET_H = 612, 792          # US letter, portrait
 CELL_W, CELL_H = SHEET_W / 2, SHEET_H / 2
 MARGIN = 12                          # keeps content clear of the cut line
-FOOTER_H = 12                        # room under each page for "Name · page n of N"
+FOOTER_H = 12                        # room under each page for "Name - page n of N"
 GUIDE = (0.6, 0.6, 0.6)
 PAGES_PER_SHEET = 4
 
@@ -75,7 +75,7 @@ def make_4up(src: Path, out: Path, title: str = "", name: str = "") -> int:
             # Passport pages are tall, so they always fill the cell's height.
             sheet.show_pdf_page(cell, doc, src_index, keep_proportion=True)
             if name:
-                _footer(sheet, cell, f"{name}  \u00b7  page {src_index + 1} of {len(doc)}")
+                _footer(sheet, cell, f"{name}  -  page {src_index + 1} of {len(doc)}")
         _guides(sheet, f"{title}  sheet {s + 1}/{sheets}  - cut on the dashed lines, "
                        "stack piles TL, TR, BL, BR")
     out_doc.save(out, garbage=3, deflate=True)
