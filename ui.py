@@ -51,6 +51,14 @@ class Job:
         return True
 
     def _run(self, args: list[str]) -> None:
+        log_file = None
+        try:
+            log_dir = WORKSPACE / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = (log_dir / f"{datetime.now():%Y-%m-%d}.log").open("a", encoding="utf-8")
+            log_file.write(f"\n=== {datetime.now():%H:%M:%S} {self.name}: {' '.join(args)}\n")
+        except OSError:
+            pass
         try:
             proc = subprocess.Popen(
                 [sys.executable, *args], cwd=HERE, stdout=subprocess.PIPE,
@@ -60,11 +68,16 @@ class Job:
                 with self.lock:
                     self.lines.append(line.rstrip("\n"))
                     del self.lines[:-MAX_LOG_LINES]
+                if log_file:
+                    log_file.write(line)
             code = proc.wait()
         except Exception as e:  # noqa: BLE001
             with self.lock:
                 self.lines.append(f"Couldn't start: {e}")
             code = 1
+        if log_file:
+            log_file.write(f"=== exit code {code}\n")
+            log_file.close()
         with self.lock:
             self.running, self.exit_code = False, code
 
@@ -92,6 +105,7 @@ def status() -> dict:
                     counts[row["level"]] = counts.get(row["level"], 0) + 1
         log = json.loads((out / "fill_log.json").read_text(encoding="utf-8")).get("cubs", {})
         result = {"date": out.name, "cubs": len(log), "counts": counts,
+                  "sheets": sum(v.get("print_sheets", 0) for v in log.values()),
                   "has_audit": (out / "audit.html").exists(),
                   "has_print": (out / "print 4-up" / "ALL CUBS - print 4-up.pdf").exists()}
     profile = WORKSPACE / "browser-profile"
@@ -109,7 +123,22 @@ def make_handler(token: str, job: Job, stop):
         def log_message(self, *a):  # keep the terminal quiet
             pass
 
+        def _note(self, text: str) -> None:
+            """Record refused/failed requests in today's log (no tokens, no bodies)."""
+            try:
+                d = WORKSPACE / "logs"
+                d.mkdir(parents=True, exist_ok=True)
+                with (d / f"{datetime.now():%Y-%m-%d}.log").open("a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now():%H:%M:%S} page: {text}\n")
+            except OSError:
+                pass
+
         def _send(self, code: int, body, ctype="application/json"):
+            if code >= 400:
+                agent = (self.headers.get("User-Agent") or "")[:80]
+                self._note(f"{code} {self.command} {urlparse(self.path).path} "
+                           f"host={self.headers.get('Host')} token={'yes' if self.headers.get('X-Token') else 'no'} "
+                           f"agent={agent}")
             data = body if isinstance(body, bytes) else (
                 json.dumps(body) if ctype == "application/json" else body).encode("utf-8")
             self.send_response(code)
@@ -139,6 +168,17 @@ def make_handler(token: str, job: Job, stop):
             if url.path == "/api/job":
                 since = int(parse_qs(url.query).get("since", ["0"])[0] or 0)
                 return self._send(200, job.snapshot(since))
+            if url.path == "/api/printers":
+                import print_passports
+                names, default = print_passports.list_printers()
+                return self._send(200, {"printers": names, "default": default,
+                                        "duplex": {n: print_passports.printer_duplex(n) for n in names},
+                                        "windows_no_sumatra": print_passports.IS_WIN
+                                        and not print_passports.find_sumatra()})
+            if url.path == "/api/cubs":
+                out = latest_out()
+                cubs = sorted(json.loads((out / "fill_log.json").read_text(encoding="utf-8"))["cubs"]) if out else []
+                return self._send(200, {"cubs": cubs})
             if url.path == "/api/doctor":
                 r = subprocess.run([sys.executable, "doctor.py", "--json"], cwd=HERE,
                                    capture_output=True, text=True, encoding="utf-8")
@@ -165,6 +205,34 @@ def make_handler(token: str, job: Job, stop):
                 if not body.get("fetch", True):
                     args.append("--no-fetch")
                 ok = job.start("Making passports", args)
+            elif path == "/api/print":
+                import print_passports
+                names, _ = print_passports.list_printers()
+                printer = body.get("printer")
+                if printer not in names:
+                    return self._send(400, {"error": "Choose a printer first."})
+                if not latest_out():
+                    return self._send(404, {"error": "not made yet"})
+                from print_layout import LAYOUTS
+                layout = body.get("layout", "4up")
+                which = body.get("pass")
+                cub = body.get("cub")
+                cubs = json.loads((latest_out() / "fill_log.json").read_text(encoding="utf-8"))["cubs"]
+                if layout not in LAYOUTS or which not in (None, "fronts", "backs") or \
+                        (cub is not None and cub not in cubs):
+                    return self._send(400, {"error": "bad request"})
+                args = ["print_passports.py", "--printer", printer, "--layout", layout, "--yes"]
+                if body.get("test"):
+                    args.append("--test-sheet")
+                if which:
+                    args += ["--pass", which]
+                    if body.get("reverse"):
+                        args.append("--reverse-backs")
+                    if body.get("rotate"):
+                        args.append("--rotate-backs")
+                if cub:
+                    args += ["--cub", cub]
+                ok = job.start("Printing", args)
             elif path == "/api/login":
                 ok = job.start("Signing in", ["passport.py", "login"])
             elif path == "/api/check":
@@ -208,7 +276,8 @@ def main() -> int:
     server, url, _, _ = make_server()
     print("Scouts Passports is open in your browser.")
     print(f"If it didn't open, copy this into your browser:\n  {url}")
-    print("\nKeep this window open while you use it. Click 'Close' on the page (or close this window) when done.")
+    print("\nKeep this window open while you use it. Click 'Close' on the page (or close this window) "
+          "when done.", flush=True)
     webbrowser.open(url)
     try:
         server.serve_forever()
@@ -227,7 +296,7 @@ PAGE = r"""<!doctype html>
 --line:#dfe4d6;--err:#c62828;--warn:#b26a00;--ok:#2e7d32;--code:#f1f3ec}
 @media (prefers-color-scheme:dark){:root{--bg:#141811;--card:#1d2318;--ink:#e8eee1;--muted:#a3b097;
 --green:#7cb342;--green-d:#689f38;--line:#323b2a;--code:#232a1d}}
-*{box-sizing:border-box}body{margin:0;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
 main{max-width:760px;margin:0 auto;padding:24px 16px 48px}
 h1{font-size:28px;margin:0 0 4px}h2{font-size:18px;margin:0 0 12px}
 .sub{color:var(--muted);margin:0 0 20px}
@@ -251,6 +320,9 @@ details summary{cursor:pointer;color:var(--muted)}
 ul.checks{list-style:none;padding:0;margin:10px 0 0}ul.checks li{padding:4px 0;border-bottom:1px solid var(--line)}
 .fix{color:var(--muted);font-size:14px;margin-left:16px}
 a{color:var(--green)}footer{color:var(--muted);font-size:14px;text-align:center}
+#jobs td,#jobs th{padding:5px 6px;border-bottom:1px solid var(--line)}
+.st-done{color:var(--ok);font-weight:600}.st-failed{color:var(--err);font-weight:600}.st-printing{color:var(--green);font-weight:600}
+.st-waiting,.st-notsent{color:var(--muted)}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--green);border-radius:50%;animation:s 1s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes s{to{transform:rotate(360deg)}}
 </style></head><body><main>
@@ -284,8 +356,50 @@ a{color:var(--green)}footer{color:var(--muted);font-size:14px;text-align:center}
     <button data-open="audit">Open check report</button>
     <button data-open="folder">Open passports folder</button>
   </div>
-  <p class="fix" style="margin:12px 0 0">Print single-sided, actual size. Cut each Cub's stack on the dashed lines,
-  then stack the piles top-left, top-right, bottom-left, bottom-right.</p>
+  <h2 style="margin-top:20px">Print</h2>
+  <div class="row">
+    <label>Layout <select id="layout">
+      <option value="4up">4 per sheet: cut and stack (small)</option>
+      <option value="booklet">Folded booklet: full size</option>
+      <option value="fullsize">Full size: 1 page per sheet</option>
+    </select></label>
+    <label>Printer <select id="printer"><option>Loading…</option></select></label>
+  </div>
+  <p class="fix" id="printnote" style="margin:10px 0 0"></p>
+  <div id="autoprint" style="margin-top:10px">
+    <div class="row">
+      <button id="testprint">Print a test sheet</button>
+      <button id="printall" class="primary" style="font-size:16px;padding:9px 16px">Print all Cubs</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label>Cub <select id="acub"></select></label>
+      <button id="printone">Print this Cub</button>
+    </div>
+    <p class="fix" style="margin:8px 0 0"><b>Print all Cubs</b> prints every Cub as its own job, back to back
+    (each one starts when the previous has finished, so pages never mix). Or print one Cub at a time;
+    the next Cub is then selected.</p>
+  </div>
+  <div id="manualprint" hidden style="margin-top:10px">
+    <p class="fix" style="margin:0 0 8px">Your printer prints one side, so each booklet is printed in two passes,
+    one Cub at a time: print the fronts, put that stack back in the paper tray printed side up, then print the backs.
+    <b>Do the test sheet first</b> to learn which way your printer needs the paper.</p>
+    <div class="row">
+      <button id="mtestf">Test: print front</button>
+      <button id="mtestb">Test: print back</button>
+      <label><input type="checkbox" id="mrev"> Reverse backs</label>
+      <label><input type="checkbox" id="mrot"> Turn backs upside down</label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label>Cub <select id="mcub"></select></label>
+      <button id="mfronts" class="primary" style="font-size:16px;padding:9px 16px">1. Print fronts</button>
+      <button id="mbacks" class="primary" style="font-size:16px;padding:9px 16px">2. Print backs</button>
+    </div>
+  </div>
+  <div class="msg" id="pmsg"></div>
+  <table id="jobs" hidden style="width:100%;border-collapse:collapse;margin-top:12px;font-size:14px">
+    <thead><tr style="text-align:left;color:var(--muted)"><th>Cub</th><th>Job</th><th>Sheets</th><th>Status</th></tr></thead>
+    <tbody></tbody>
+  </table>
 </section>
 
 <section class="card">
@@ -308,12 +422,22 @@ a{color:var(--green)}footer{color:var(--muted);font-size:14px;text-align:center}
 </main>
 <script>
 const T="__TOKEN__";
-const api=(p,opt={})=>fetch(p,{...opt,headers:{"X-Token":T,"Content-Type":"application/json"}}).then(r=>r.json().then(j=>({ok:r.ok,j})));
+const DEAD="The tool isn't running any more (its terminal window was closed, or this is an old tab). "+
+  "Close this tab and double-click <b>Scouts Passports</b> again.";
+async function api(p,opt={}){
+  let r;
+  try{ r=await fetch(p,{...opt,headers:{"X-Token":T,"Content-Type":"application/json"}}) }
+  catch(e){ msg(DEAD,"bad"); busy(true); throw e }
+  if(r.status===403){ msg(DEAD,"bad"); busy(true); throw new Error("forbidden") }
+  let j={}; try{ j=await r.json() }catch(e){}
+  return {ok:r.ok,j};
+}
 const $=id=>document.getElementById(id);
 let since=0,polling=false;
 
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
-function msg(text,kind){const m=$("msg");m.className="msg show "+kind;m.innerHTML=text}
+let msgTarget="msg";
+function msg(text,kind){const m=$(msgTarget);m.className="msg show "+kind;m.innerHTML=text}
 
 async function refresh(){
   const {j:s}=await api("/api/status");
@@ -325,7 +449,7 @@ async function refresh(){
     `<span><span class="dot ${!s.result?"warn":s.result.counts.ERROR?"err":"ok"}"></span>Passports</span><span>${s.result?`${s.result.cubs} made on ${s.result.date}`:"None yet"}</span>`;
   if(s.result){
     $("results").hidden=false;$("rdate").textContent="("+s.result.date+")";
-    const c=s.result.counts;
+    const c=s.result.counts; sheetsTotal=s.result.sheets||0;
     $("counts").innerHTML=`<span class="pill e">${c.ERROR} errors</span><span class="pill w">${c.WARN} to check in ScoutsTracker</span><span class="pill i">${c.INFO} notes</span>`;
   }
 }
@@ -334,9 +458,18 @@ async function poll(){
   if(polling)return;polling=true;
   while(true){
     const {j}=await api("/api/job?since="+since);
-    if(j.lines.length){$("log").textContent+=j.lines.join("\n")+"\n";$("log").scrollTop=1e9;since=j.total}
+    if(j.lines.length){
+      const shown=j.lines.filter(l=>!l.startsWith("JOB "));
+      for(const l of j.lines) if(l.startsWith("JOB ")) { try{ trackJob(JSON.parse(l.slice(4))) }catch(e){} }
+      if(shown.length){$("log").textContent+=shown.join("\n")+"\n";$("log").scrollTop=1e9}
+      since=j.total}
     const last=j.lines.filter(l=>l.startsWith("=== ")).pop();
-    if(j.running){$("jobstate").innerHTML=`<span class="spinner"></span>${esc(j.name)}… ${last?esc(last.replace(/=/g,"").trim()):""}`;busy(true)}
+    if(j.running){
+      const cur=j.name==="Printing"?($("log").textContent.trim().split("\n").filter(l=>/^(Printing|  done)/.test(l)).pop()||""):"";
+      const done=($("log").textContent.match(/^  done:/gm)||[]).length;
+      $("jobstate").innerHTML=`<span class="spinner"></span>${esc(j.name)}… ${last?esc(last.replace(/=/g,"").trim()):""}`;
+      if(j.name==="Printing"){msgTarget="pmsg";msg(`<span class="spinner"></span>${done} finished. ${esc(cur.replace(/^Printing /,"Now printing: "))}`,"note")}
+      busy(true)}
     else{
       busy(false);$("jobstate").textContent="";
       if(j.name){done(j)}
@@ -354,17 +487,86 @@ function done(j){
     else if(/PIN|not logged in|Not logged into/i.test(log)) msg("ScoutsTracker needs you to sign in again (your PIN expires every so often). Click <b>Sign into ScoutsTracker</b>, then <b>Make passports</b> again.","note");
     else if(/ERROR/.test(log)) msg("Passports were made, but some have errors. Open the <b>check report</b> before printing.","bad");
     else {msg("Something went wrong. Open <b>Show details</b> below, and see the troubleshooting guide.","bad");$("logbox").open=true}
+  } else if(j.name==="Printing"){
+    const after=log.trim().split("\n").pop();
+    if(j.exit_code!==0){msg("Printing didn't work. Open <b>Show details</b> in the Make passports box.","bad");$("logbox").open=true}
+    else if(lastPrint.pass==="fronts") msg(`<b>${esc(lastPrint.cub||"Test")} fronts sent.</b> When they've printed, take the stack out, turn it over (printed side up) and put it back in the paper tray, then click <b>${lastPrint.test?"Test: print back":"2. Print backs"}</b>.`,"good");
+    else if(lastPrint.pass==="backs"){
+      if(lastPrint.test) msg("Test back sent. Fold the sheet: the cover and back cover should be outside and the right way up. Backs in the wrong order? Tick <b>Reverse backs</b>. Upside down? Tick <b>Turn backs upside down</b>. Then repeat the test.","good");
+      else { msg(`<b>${esc(lastPrint.cub)} done.</b> Fold the stack in half and staple on the fold. The next Cub is selected; click <b>1. Print fronts</b>.`,"good"); nextCub(); }
+    }
+    else if(lastPrint.cub && !lastPrint.test){ msg(`<b>${esc(lastPrint.cub)} printed.</b> Cut and stack their sheets. The next Cub is selected; click <b>Print this Cub</b> when ready.`,"good"); nextCub("acub"); }
+    else msg(esc(after),"good");
   } else if(j.name==="Signing in"){
     msg(j.exit_code===0?"Signed in. You can make passports now.":"Sign-in didn't finish. Try again; the window waits 10 minutes.",j.exit_code===0?"good":"note");
   } else if(j.name==="Checking setup"){ loadChecks(); msg(j.exit_code===0?"Setup looks good.":"Some setup checks failed. See the list under <b>Sign in &amp; setup</b>.",j.exit_code===0?"good":"bad") }
 }
 
-function busy(b){for(const id of ["go","login","check"])$(id).disabled=b}
+const LABEL={"waiting":"Waiting","sent":"Sent","pending":"In printer queue","pending-held":"Held at printer",
+  "processing":"Printing","processing-stopped":"Paused (check printer)","completed":"Finishing","done":"Done",
+  "failed":"Failed","canceled":"Cancelled","aborted":"Failed","not sent":"Not sent"};
+let jobRows={};
+function trackJob(e){
+  $("jobs").hidden=false;
+  const tb=$("jobs").tBodies[0];
+  let tr=jobRows[e.i];
+  if(!tr){ tr=jobRows[e.i]=tb.insertRow(); for(let k=0;k<4;k++) tr.insertCell() }
+  const name=e.title.replace(/^(TEST )?Passports? (fronts|backs)? ?- /,"").replace(/^Passport - /,"");
+  const cls="st-"+({done:"done",failed:"failed",aborted:"failed",canceled:"failed","not sent":"notsent",waiting:"waiting"}[e.state]||"printing");
+  tr.cells[0].textContent=name;
+  tr.cells[1].textContent=e.job?("#"+e.job):"";
+  tr.cells[2].textContent=(e.sheets!=null?e.sheets:"")+(e.expected?` / ${e.expected}`:"");
+  tr.cells[3].innerHTML=`<span class="${cls}">${esc(LABEL[e.state]||e.state)}</span>`;
+}
+function busy(b){for(const id of ["go","login","check","printall","printone","testprint","mtestf","mtestb","mfronts","mbacks"])$(id).disabled=b}
 
-async function start(path,body){
-  $("log").textContent="";since=0;$("msg").className="msg";
+let sheetsTotal=0,printers={duplex:{}},lastPrint={},cubCount=0;
+const store={get:(k,d)=>{try{return localStorage.getItem(k)??d}catch(e){return d}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
+async function loadPrinters(){
+  const {ok,j}=await api("/api/printers");
+  const sel=$("printer");
+  if(!ok||!j.printers.length){sel.innerHTML="<option value=''>No printers found</option>";printUI();return}
+  printers=j;
+  const saved=store.get("printer","");
+  sel.innerHTML=j.printers.map(p=>`<option ${p===(j.printers.includes(saved)?saved:j.default)?"selected":""}>${esc(p)}</option>`).join("");
+  printUI();
+}
+async function loadCubs(){
+  const {j}=await api("/api/cubs"); cubCount=j.cubs.length;
+  $("mcub").innerHTML=j.cubs.map(c=>`<option>${esc(c)}</option>`).join("");
+  $("acub").innerHTML=j.cubs.map(c=>`<option>${esc(c)}</option>`).join("");
+}
+function nextCub(id="mcub"){const s=$(id);if(s.selectedIndex<s.options.length-1)s.selectedIndex++}
+function printUI(){
+  const layout=$("layout").value,p=$("printer").value,duplex=!!printers.duplex[p];
+  const manual=layout==="booklet"&&!duplex;
+  $("autoprint").hidden=manual;$("manualprint").hidden=!manual;
+  const per={"4up":16,"booklet":16,"fullsize":duplex?32:64}[layout];
+  const sheets=cubCount*per;
+  const text={
+    "4up":"Four pages per letter sheet, single-sided. Cut each Cub's stack on the dashed lines, then stack the piles top-left, top-right, bottom-left, bottom-right.",
+    "booklet":duplex?"Full-size pages, printed on both sides automatically. Fold each Cub's stack in half and staple on the fold.":"Full-size pages on both sides of the paper, printed in two passes (steps below). Fold each Cub's stack in half and staple on the fold.",
+    "fullsize":duplex?"One full-size page per side, printed on both sides. Staple or bind on the left edge.":"One full-size page per sheet, single-sided. Uses the most paper.",
+  }[layout];
+  $("printnote").innerHTML=(p?`<b>${esc(p)}</b> ${duplex?"prints both sides":"prints one side only"}. `:"")+text+
+    (cubCount?` About <b>${sheets}</b> sheets for ${cubCount} Cubs.`:"")+
+    (printers.windows_no_sumatra?"<br><b>Tip:</b> install SumatraPDF (free) for exact-size and two-sided printing: <code>winget install SumatraPDF.SumatraPDF</code>":"");
+  sheetsTotal=sheets;
+}
+function doPrint(body){
+  const p=$("printer").value; if(!p){msgTarget="pmsg";msg("Choose a printer first.","note");return}
+  lastPrint=body;
+  start("/api/print",{printer:p,layout:$("layout").value,...body},"pmsg");
+}
+
+async function start(path,body,target){
+  msgTarget=target||"msg";
+  if(path==="/api/print"){ jobRows={}; $("jobs").tBodies[0].innerHTML=""; $("jobs").hidden=true; }
+  $("log").textContent="";since=0;$("msg").className="msg";$("pmsg").className="msg";
   const {ok,j}=await api(path,{method:"POST",body:JSON.stringify(body||{})});
-  if(!ok){msg(j.error==="busy"?"Something is already running. Please wait.":esc(j.error),"note");return}
+  if(!ok){msg(j.error==="busy"?"Something is already running. Please wait.":
+             j.error==="not made yet"?"Make the passports first.":esc(j.error||"That didn't work."),"note");return}
+  msg(path==="/api/print"?"Sending to the printer…":"Started…","note");
   poll();
 }
 
@@ -378,6 +580,18 @@ async function loadChecks(){
 
 $("go").onclick=()=>start("/api/run",{stage:+$("stage").value,fetch:$("fetch").checked});
 $("login").onclick=()=>start("/api/login");
+$("printall").onclick=()=>{ if(confirm(`Print all ${cubCount} Cubs on ${$("printer").value}, one job per Cub? About ${sheetsTotal} sheets of paper.`)) doPrint({test:false}) };
+$("printone").onclick=()=>doPrint({test:false,cub:$("acub").value});
+$("testprint").onclick=()=>doPrint({test:true});
+const flags=()=>({reverse:$("mrev").checked,rotate:$("mrot").checked});
+$("mtestf").onclick=()=>doPrint({test:true,pass:"fronts"});
+$("mtestb").onclick=()=>doPrint({test:true,pass:"backs",...flags()});
+$("mfronts").onclick=()=>doPrint({pass:"fronts",cub:$("mcub").value});
+$("mbacks").onclick=()=>doPrint({pass:"backs",cub:$("mcub").value,...flags()});
+for(const id of ["mrev","mrot"]){ $(id).checked=store.get(id,"0")==="1"; $(id).onchange=()=>store.set(id,$(id).checked?"1":"0") }
+$("layout").value=store.get("layout","4up");
+$("layout").onchange=()=>{store.set("layout",$("layout").value);printUI()};
+$("printer").onchange=()=>{store.set("printer",$("printer").value);printUI()};
 $("check").onclick=()=>start("/api/check");
 document.querySelectorAll("[data-open]").forEach(b=>b.onclick=async()=>{
   const {ok}=await api("/api/open",{method:"POST",body:JSON.stringify({what:b.dataset.open})});
@@ -386,7 +600,7 @@ document.querySelectorAll("[data-open]").forEach(b=>b.onclick=async()=>{
 $("quit").onclick=async e=>{e.preventDefault();await api("/api/quit",{method:"POST"});
   document.body.innerHTML="<main><h1>Closed</h1><p class='sub'>You can close this tab.</p></main>"};
 
-refresh();loadChecks();poll();
+refresh();loadChecks();loadCubs().then(loadPrinters);poll();
 </script></body></html>"""
 
 

@@ -90,3 +90,78 @@ if __name__ == "__main__":
         o = p.with_name(p.stem + " - print 4-up.pdf")
         n = make_4up(p, o, p.stem, p.stem.split(" - ")[0])
         print(f"{o} ({n} sheets)")
+
+
+# ------------------------------------------------------------------------
+# Folded booklet (saddle stitch): two full-size passport pages per side of a
+# landscape letter sheet. Print double-sided, flip on the SHORT edge, fold the
+# stack in half and staple on the fold. Passport pages are exactly half a
+# letter sheet, so nothing is scaled.
+# ------------------------------------------------------------------------
+LANDSCAPE_W, LANDSCAPE_H = SHEET_H, SHEET_W   # 792 x 612
+
+
+def booklet_order(n: int) -> list[tuple[int, int]]:
+    """(left, right) page indexes for each side, in print order:
+    sheet 1 front, sheet 1 back, sheet 2 front, ... (n must be a multiple of 4)."""
+    sides = []
+    for i in range(n // 4):
+        sides.append((n - 1 - 2 * i, 2 * i))          # front
+        sides.append((2 * i + 1, n - 2 - 2 * i))      # back
+    return sides
+
+
+def make_booklet(src: Path, out: Path, name: str = "") -> int:
+    """Write the booklet PDF (fronts and backs alternate). Returns sheets of paper."""
+    doc = fitz.open(src)
+    pad_to_multiple(doc)
+    out_doc = fitz.open()
+    half = LANDSCAPE_W / 2
+    for k, (left, right) in enumerate(booklet_order(len(doc))):
+        side = out_doc.new_page(width=LANDSCAPE_W, height=LANDSCAPE_H)
+        side.show_pdf_page(fitz.Rect(0, 0, half, LANDSCAPE_H), doc, left)
+        side.show_pdf_page(fitz.Rect(half, 0, LANDSCAPE_W, LANDSCAPE_H), doc, right)
+        if name and k % 2 == 0:   # tiny label on the fold, fronts only, to keep stacks sorted
+            label = f"{name} - sheet {k // 2 + 1}/{len(doc) // 4}"
+            w = fitz.get_text_length(label, fontname="helv", fontsize=5)
+            side.insert_text((half - w / 2, LANDSCAPE_H - 2), label, fontsize=5,
+                             fontname="helv", color=(0.55, 0.55, 0.55))
+    out_doc.save(out, garbage=3, deflate=True)
+    sheets = len(out_doc) // 2
+    out_doc.close()
+    doc.close()
+    return sheets
+
+
+# ------------------------------------------------------------------------
+# Full size: one passport page per letter sheet, centred, actual size, with
+# the Cub's name and page number underneath. Double-sided printers flip on
+# the LONG edge.
+# ------------------------------------------------------------------------
+def make_fullsize(src: Path, out: Path, name: str = "") -> int:
+    """Write the full-size PDF. Returns the number of printed sides."""
+    doc = fitz.open(src)
+    if len(doc) % 2:               # even count so double-sided pages pair up
+        pad_to_multiple(doc, 2)
+    out_doc = fitz.open()
+    w, h = doc[0].rect.width, doc[0].rect.height
+    x0, y0 = (SHEET_W - w) / 2, (SHEET_H - h) / 2
+    for i in range(len(doc)):
+        page = out_doc.new_page(width=SHEET_W, height=SHEET_H)
+        page.show_pdf_page(fitz.Rect(x0, y0, x0 + w, y0 + h), doc, i)
+        if name:
+            _footer(page, fitz.Rect(x0, y0, x0 + w, y0 + h + 8),
+                    f"{name}  -  page {i + 1} of {len(doc)}")
+    out_doc.save(out, garbage=3, deflate=True)
+    sides = len(out_doc)
+    out_doc.close()
+    doc.close()
+    return sides
+
+
+LAYOUTS = {
+    # key: (folder name, maker, double-sided flip edge or None if single-sided only)
+    "4up": ("print 4-up", make_4up, None),
+    "booklet": ("print booklet", make_booklet, "short"),
+    "fullsize": ("print full size", make_fullsize, "long"),
+}

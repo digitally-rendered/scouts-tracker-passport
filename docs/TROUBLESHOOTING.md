@@ -80,6 +80,15 @@ your browser. Bookmarks to the page don't work later, because the address change
 ### "Open the page from the Scouts Passports shortcut"
 You opened an old or bookmarked address. Close the tab and double-click **Scouts Passports** again.
 
+### The buttons do nothing / "The tool isn't running any more"
+The page only works while its terminal window is open. Close the tab and double-click
+**Scouts Passports** again to get a fresh page.
+
+### Finding out what happened
+Everything the page runs (making passports, signing in, printing) is written to
+`ScoutsPassportData/logs/<date>.log`. The log has no passwords. It does name Cubs, so read it
+yourself rather than sending it on. Send only the error lines if you ask for help.
+
 ### The page says "Something is already running"
 Wait for the current task to finish (the spinner shows what it's doing). The sign-in task waits
 up to 10 minutes for you to finish signing in.
@@ -123,7 +132,37 @@ Click **Make passports** with **Get the latest from ScoutsTracker** ticked.
 
 ## Printing
 
-### Which file do I print?
+### Printing from the page
+Under **Print**, choose your printer, click **Print a test sheet**, then **Print all passports**.
+Each Cub is sent as its own print job. From a terminal: `uv run python print_passports.py --dry-run`
+shows what would print; drop `--dry-run` to print, and add `--cub "First Last"` for one Cub.
+
+### Booklet backs come out upside down, or on the wrong sheet
+That depends on how your printer feeds paper, which is why there's a test sheet. On the page
+(booklet layout, one-sided printer): tick **Turn backs upside down** if the back was upside
+down, and **Reverse backs** if the backs landed on the wrong sheets. Then repeat
+**Test: print front** / **Test: print back** until the folded test sheet is right.
+The page remembers both settings. Reload the printed stack **printed side up**, turned over like a page.
+
+### "This printer can't print both sides by itself"
+From the terminal, a booklet on a one-sided printer needs two passes:
+`--layout booklet --pass fronts`, reload the paper, then `--layout booklet --pass backs`.
+The page does this for you, one Cub at a time.
+
+### "No printers found"
+Add the printer in your computer's settings first (Mac: System Settings → Printers & Scanners;
+Windows: Settings → Bluetooth & devices → Printers & scanners), then reopen the page.
+
+### Pages come out shrunk or not centred (Windows)
+Without SumatraPDF, Windows hands the file to your default PDF app, which may "fit to page".
+Install SumatraPDF (`winget install SumatraPDF.SumatraPDF`, free) and print again. The tool uses
+it automatically.
+
+### Some passports didn't print
+The page shows which ones failed (open **Show details**). Fix the printer (paper, jam, offline),
+then print just those Cubs: `uv run python print_passports.py --cub "First Last"`.
+
+### Which file do I print by hand?
 `print 4-up/ALL CUBS - print 4-up.pdf`, **single-sided**, on letter paper, at **"Actual size" / 100%**
 (not "Fit to page"). Each sheet has 4 passport pages, and under every page is the Cub's
 name and page number.

@@ -61,14 +61,32 @@ Click **Close** at the bottom of the page when you're finished.
 
 ## Print
 
-Open the `print 4-up` folder and print **`ALL CUBS - print 4-up.pdf`** (single-sided, letter,
-"actual size"). Each sheet has 4 passport pages; the Cub's name and page number are under every page.
+On the page, under **Print**, pick a **Layout** and a **Printer** (your default is preselected).
+The page tells you whether that printer prints both sides by itself.
 
-For each Cub's sheets (the name is at the bottom of each sheet):
+| Layout | Paper per Cub* | Page size | Finishing |
+|---|---|---|---|
+| **4 per sheet: cut and stack** | 16 sheets, one side | ~65% | cut on the dashed lines, stack the piles top-left, top-right, bottom-left, bottom-right, staple |
+| **Folded booklet** | 16 sheets, both sides | full size | fold the stack in half, staple on the fold |
+| **Full size** | 32 sheets (both sides) or 64 (one side) | full size | staple or bind on the left |
 
-1. Cut the whole stack along the dashed lines.
-2. Stack the four piles: **top-left** on top, then **top-right**, then **bottom-left**, then **bottom-right**.
-3. The pages are now in order — staple or bind.
+\* for a 64-page passport (stages 1-4).
+
+Always click **Print a test sheet** first. Each Cub prints as its own job, so stacks stay separate.
+
+**Booklets on a printer that prints one side only** (e.g. Brother MFC-9130CW): the page switches to
+a two-pass mode, one Cub at a time:
+
+1. **Test: print front**. Put that sheet back in the paper tray printed side up (turn it over like a
+   page), then **Test: print back**. Fold it: the cover should be on the outside, the right way up.
+   If the back came out upside down, tick **Turn backs upside down**; if a multi-sheet booklet's backs
+   come out in the wrong order, tick **Reverse backs**. The page remembers these settings.
+2. For each Cub: **1. Print fronts**, reload the stack the same way, **2. Print backs**. The page
+   then moves to the next Cub.
+
+> Windows: install the free **SumatraPDF** (`winget install SumatraPDF.SumatraPDF`) for exact-size and
+> two-sided printing. Without it, Windows' default PDF app prints and may shrink pages.
+> Printing by hand instead? The files are in `print 4-up`, `print booklet` and `print full size`.
 
 ## Read the audit
 
@@ -122,6 +140,7 @@ Optional files in `ScoutsPassportData`:
 |---|---|
 | `uv run python passport.py ui` | the point-and-click page (`ui.py`, local only, secret-key URL) |
 | `uv run python passport.py run [--stages 1-4] [--no-fetch]` | fetch → build → fill → audit |
+| `uv run python print_passports.py --layout 4up\|booklet\|fullsize [--pass fronts\|backs] [--test-sheet] [--dry-run] [--cub NAME]` | print, one job per Cub; `--list` shows printers and whether they print both sides |
 | `uv run --group dev pytest` | tests (synthetic Cubs, no real data); CI runs them on Mac/Windows/Linux |
 | `uv run python passport.py login` | sign into ScoutsTracker (saved profile) |
 | `uv run python doctor.py [--online] [--json]` | setup checks |

@@ -83,3 +83,46 @@ def test_make_passports_from_the_page(server, monkeypatch):
     assert request(port, "POST", "/api/open", token, {"what": "print"})[0] == 200
     assert request(port, "POST", "/api/open", token, {"what": "nope"})[0] == 404
     assert opened and opened[0].name == "ALL CUBS - print 4-up.pdf"
+
+
+def test_printers_listed_and_unknown_printer_rejected(server, monkeypatch):
+    import print_passports
+    port, token, _ = server
+    monkeypatch.setattr(print_passports, "list_printers", lambda: (["Test Printer"], "Test Printer"))
+    monkeypatch.setattr(print_passports, "printer_duplex", lambda name: False)
+    code, r = request(port, "GET", "/api/printers", token)
+    assert code == 200 and r["printers"] == ["Test Printer"] and r["default"] == "Test Printer"
+    assert r["duplex"] == {"Test Printer": False}
+    code, r = request(port, "GET", "/api/cubs", token)
+    assert code == 200 and r["cubs"] == ["Alex Tester", "Blair Example", "Casey Sample"]
+    assert request(port, "POST", "/api/print", token, {"printer": "Not A Printer"})[0] == 400
+    assert request(port, "POST", "/api/print", token, {})[0] == 400
+
+
+def test_print_from_page_runs_print_script(server, monkeypatch):
+    import print_passports
+    port, token, job = server
+    monkeypatch.setattr(print_passports, "list_printers", lambda: (["Test Printer"], "Test Printer"))
+    started = []
+    monkeypatch.setattr(job, "start", lambda name, args: started.append((name, args)) or True)
+    assert request(port, "POST", "/api/print", token, {"printer": "Test Printer", "test": True})[0] == 200
+    name, args = started[0]
+    assert name == "Printing" and args[:3] == ["print_passports.py", "--printer", "Test Printer"]
+    assert "--yes" in args and "--test-sheet" in args
+
+
+def test_manual_booklet_pass_from_page(server, monkeypatch):
+    import print_passports
+    port, token, job = server
+    monkeypatch.setattr(print_passports, "list_printers", lambda: (["Test Printer"], "Test Printer"))
+    started = []
+    monkeypatch.setattr(job, "start", lambda name, args: started.append(args) or True)
+    body = {"printer": "Test Printer", "layout": "booklet", "pass": "backs",
+            "cub": "Alex Tester", "reverse": True, "rotate": False}
+    assert request(port, "POST", "/api/print", token, body)[0] == 200
+    args = started[0]
+    assert args[args.index("--layout") + 1] == "booklet" and args[args.index("--pass") + 1] == "backs"
+    assert args[args.index("--cub") + 1] == "Alex Tester"
+    assert "--reverse-backs" in args and "--rotate-backs" not in args
+    for bad in ({"layout": "poster"}, {"pass": "middles"}, {"cub": "Not A Cub"}):
+        assert request(port, "POST", "/api/print", token, {**body, **bad})[0] == 400
